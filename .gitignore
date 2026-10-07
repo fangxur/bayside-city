@@ -1,0 +1,32 @@
+node_modules/
+.DS_Store
+artifacts/
+.bayside-data/
+
+# Local configuration, credentials and player data
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*身份凭据*.json
+*恢复卡*.json
+.aws/
+.codex/
+.agents/
+
+# Generated output and local tooling
+*.log
+*.tar.gz
+*.zip
+coverage/
+.idea/
+.vscode/

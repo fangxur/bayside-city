@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#244b40">
+  <title>湾畔市 · 把河湾变成你的城市</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='12' fill='%23244b40'/%3E%3Cpath d='M7 29L18 11l8 11 6-7 9 14M7 35q9-6 18 0t16 0' fill='none' stroke='%23f5eddc' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./src/style.css">
+  <link rel="stylesheet" href="./src/city-visit.css">
+  <link rel="stylesheet" href="./src/terrain-editor.css">
+  <link rel="stylesheet" href="./src/mobile.css">
+  <script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/":"./node_modules/three/"}}</script>
+</head>
+<body>
+  <main id="game" aria-label="湾畔市城市建设游戏">
+    <div id="world" aria-label="城市地图，使用鼠标建设，方向键移动施工光标，回车施工"></div>
+    <div id="loading" role="status"><span class="loading-logo">湾畔市</span><span>正在铺开这片河湾…</span></div>
+
+    <header class="topbar glass" id="city-topbar">
+      <button id="city-name-button" class="brand" aria-label="修改城市名称和市长姓名" title="点击编辑城市名称与市长署名">
+        <svg class="brand-symbol" viewBox="0 0 42 42" aria-hidden="true"><path d="M4 26 14 9l9 14 7-11 9 14"/><path d="M3 30q9-6 18 0t18 0M3 36q9-6 18 0t18 0"/></svg>
+        <span><strong id="city-name">湾畔市</strong><small id="city-subtitle">点击设置市长</small><small id="city-coop-honor" hidden></small></span>
+      </button>
+      <div class="hud-metrics">
+        <button class="hud-item" id="budget-button" aria-label="查看城市财政"><span class="metric-icon coin">¥</span><span><small>可用资金</small><strong id="money">30,000</strong></span></button>
+        <button class="hud-item" id="income-button" aria-label="查看月收支"><span data-icon="trend"></span><span><small>月结余</small><strong id="balance">—</strong></span></button>
+        <div class="hud-item"><span data-icon="people"></span><span><small>人口</small><strong id="population">0</strong></span></div>
+        <div class="hud-item happiness-hud"><span data-icon="happy"></span><span><small>满意度</small><strong id="happiness">—</strong></span></div>
+      </div>
+      <div class="time-controls">
+        <div class="play-controls">
+        <span class="date"><span class="sun" data-icon="sun"></span><span id="date">1 年 · 1 月</span></span>
+        <button id="festival-calendar-button" aria-label="打开年度节庆日历" title="查看年度节庆日历">节庆日历</button>
+        <div class="speed-group" role="group" aria-label="模拟速度">
+          <button id="pause" aria-label="暂停模拟" title="暂停 / 继续（P）"><span data-icon="pause"></span></button>
+          <button data-speed="1" aria-pressed="true">1×</button>
+          <button data-speed="3" aria-pressed="false">3×</button>
+        </div>
+        </div>
+        <button class="icon-button" id="account-button" aria-label="账号与我的城市" title="登录账号 · 我的城市"><span data-icon="people"></span></button>
+        <button class="icon-button" id="menu-button" aria-label="存档与城市菜单" title="存档与城市菜单"><span data-icon="menu"></span></button>
+      </div>
+      <button class="mobile-header-toggle plain-icon" id="mobile-header-collapse" aria-label="收起顶部面板" aria-expanded="true" aria-controls="city-topbar" title="收起顶部面板"><span data-icon="chevron"></span></button>
+    </header>
+    <button class="mobile-header-restore glass" id="mobile-header-restore" aria-label="展开顶部面板" aria-expanded="false" aria-controls="city-topbar"><span data-icon="chevron"></span>展开顶栏</button>
+
+    <aside class="mobile-overview glass" id="mobile-overview" aria-label="需求与水电看板">
+      <button class="mobile-overview-toggle" id="mobile-overview-toggle" aria-expanded="true" aria-controls="mobile-overview-body" aria-label="收起需求与水电看板"><strong>需求 · 水电</strong><span data-icon="chevron"></span></button>
+      <div id="mobile-overview-body">
+        <div class="mobile-demand" aria-label="分区需求">
+          <button data-building-filter="residential" aria-pressed="false" aria-label="查看并高亮所有住宅建筑"><span>住宅 <b id="mobile-demand-residential-value">0</b></span><span class="mobile-demand-track"><i id="mobile-demand-residential"></i></span></button>
+          <button data-building-filter="commercial" aria-pressed="false" aria-label="查看并高亮所有商业建筑"><span>商业 <b id="mobile-demand-commercial-value">0</b></span><span class="mobile-demand-track"><i id="mobile-demand-commercial"></i></span></button>
+          <button data-building-filter="industrial" aria-pressed="false" aria-label="查看并高亮工业、供电和供水建筑"><span>工业 <b id="mobile-demand-industrial-value">0</b></span><span class="mobile-demand-track"><i id="mobile-demand-industrial"></i></span></button>
+        </div>
+        <div class="mobile-utilities" aria-label="水电已用与总容量">
+          <div class="mobile-utility"><div><span>电力</span><strong id="mobile-power-value">0 / 0</strong></div><div class="mobile-utility-track" id="mobile-power-meter" role="progressbar" aria-label="电力使用率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="mobile-power-fill"></i></div></div>
+          <div class="mobile-utility"><div><span>供水</span><strong id="mobile-water-value">0 / 0</strong></div><div class="mobile-utility-track" id="mobile-water-meter" role="progressbar" aria-label="供水使用率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="mobile-water-fill"></i></div></div>
+        </div>
+      </div>
+    </aside>
+
+    <button id="toggle-left-panel" class="panel-toggle glass" aria-expanded="true" aria-controls="city-sidebar">收起城市面板</button>
+    <button id="toggle-right-panel" class="panel-toggle glass" aria-expanded="true" aria-controls="inspector">收起详情面板</button>
+    <aside class="left-rail" id="city-sidebar">
+      <div class="mobile-panel-heading"><strong>城市概览</strong><button class="plain-icon" id="close-mobile-city" aria-label="收起城市面板">×</button></div>
+      <section class="objective glass" aria-label="城市发展目标">
+        <div class="eyebrow"><span data-icon="flag"></span> 城市成长 <button class="plain-icon" id="toggle-guide" aria-label="收起城市成长" aria-controls="objective-body" aria-expanded="true"><span data-icon="chevron"></span></button></div>
+        <div id="objective-body" class="objective-body">
+          <section id="city-goal-card" class="city-goal-card" aria-label="本局长期目标">
+            <div><span>本局目标</span><strong id="city-goal-name">五万人口都会</strong><b id="city-goal-status">进行中</b></div>
+            <p id="city-goal-description">将城市发展到 50,000 人</p>
+            <div class="city-goal-progress"><span id="city-goal-fill"></span></div>
+            <small id="city-goal-current">0 / 50,000 人</small>
+          </section>
+          <h2 id="objective-title">一座城市的开始</h2>
+          <p id="objective-description">从第一条街道开始。</p>
+          <div id="objective-requirements" aria-label="城市晋级条件" hidden></div>
+          <button id="objective-action" hidden>建设市政府 · ¥3,000</button>
+          <div id="growth-stages" class="growth-stages" aria-label="城市成长阶段"></div>
+          <div class="objective-progress"><span id="objective-fill"></span></div>
+          <div class="objective-count"><span id="objective-current">0</span><span id="objective-target">100 位居民</span></div>
+          <div id="guide-steps" class="guide-steps"></div>
+        </div>
+      </section>
+      <section class="demand glass" aria-label="分区需求">
+        <div class="eyebrow">城市需要什么 <span class="tiny-label">需求</span></div>
+        <div class="demand-bars">
+          <button data-building-filter="residential" aria-pressed="false" aria-label="查看并高亮所有住宅建筑"><span class="demand-track"><i id="demand-residential"></i></span><span>住宅</span><b id="demand-residential-value">0</b></button>
+          <button data-building-filter="commercial" aria-pressed="false" aria-label="查看并高亮所有商业建筑"><span class="demand-track"><i id="demand-commercial"></i></span><span>商业</span><b id="demand-commercial-value">0</b></button>
+          <button data-building-filter="industrial" aria-pressed="false" aria-label="查看并高亮工业、供电和供水建筑"><span class="demand-track"><i id="demand-industrial"></i></span><span>工业</span><b id="demand-industrial-value">0</b></button>
+        </div>
+        <p id="building-filter-status" role="status" hidden></p>
+        <div id="demand-reasons" class="demand-reasons" aria-label="当前需求原因"></div>
+      </section>
+      <div class="rail-actions">
+        <button class="civic-dispatch glass" id="civic-dispatch" hidden></button>
+        <button class="help-pill glass life-button" id="life-button" title="点击路上的人、车或聊天气泡，也能听到他们的想法"><span data-icon="chat"></span> 街头见闻 <span class="life-dot"></span></button>
+        <button class="help-pill glass workforce-button" id="workforce-button" title="查看各行业从业人数、税收贡献与工资支出"><span data-icon="people"></span> 就业与行业</button>
+        <button class="help-pill glass catalog-button" id="catalog-button" title="查看建筑与车辆图鉴、解锁条件和三维模型"><span data-icon="catalog"></span> 城市图鉴</button>
+        <button class="help-pill glass" id="signal-button" title="放大查看红绿灯、停车与放行"><span data-icon="signal"></span> 路口观察</button>
+        <button class="help-pill glass" id="civic-button" title="选择市政方针、查看公共服务并管理消防"><span data-icon="cityHall"></span> 城市政务</button>
+        <button class="help-pill glass" id="help-button"><span data-icon="help"></span> 市长手册 <kbd>?</kbd></button>
+      </div>
+    </aside>
+
+    <aside class="right-rail glass" id="inspector" aria-label="城市与建筑详情">
+      <div class="inspector-heading"><span class="eyebrow" id="inspector-eyebrow">城市脉搏</span><button class="plain-icon" id="close-inspector" aria-label="返回城市概览"><span data-icon="close"></span></button></div>
+      <h2 id="inspector-title">小城，正在生长</h2>
+      <p class="inspector-subtitle" id="inspector-subtitle">每一条路，都连接一种可能。</p>
+      <div id="inspector-upgrade" aria-label="快捷升级" hidden></div>
+      <div id="inspector-content"></div>
+      <section id="signal-inspector" class="signal-inspector" aria-label="路口信号" hidden></section>
+      <div id="city-alerts" class="alerts"></div>
+    </aside>
+
+    <nav class="map-controls glass" id="map-view-controls" aria-label="地图视角">
+      <div class="mobile-panel-heading"><strong>地图视角</strong><button class="plain-icon" id="close-mobile-map" aria-label="收起视角面板">×</button></div>
+      <div id="upgrade-map-actions" hidden>
+      <button id="upgrade-all-roads" class="glass">全部道路升级</button>
+      <button id="toggle-upgrade-markers" class="glass" aria-pressed="true" title="隐藏建筑上方的可升级箭头" hidden>隐藏升级箭头</button>
+      </div>
+      <button id="lighting-mode" title="切换白天、夜晚、自动昼夜" aria-label="昼夜模式：白天，点击切换夜晚">白天</button>
+      <button id="road-focus" aria-pressed="false" title="隐藏建筑与树木，方便选择道路；再次点击恢复">道路专注</button>
+      <button id="zoom-in" aria-label="放大地图" title="放大"><span data-icon="plus"></span></button>
+      <button id="zoom-out" aria-label="缩小地图" title="缩小"><span data-icon="minus"></span></button>
+      <span class="separator"></span>
+      <button id="rotate" aria-label="旋转地图" title="旋转 15°（Q / E）；右键或 Alt + 左键拖动自由旋转"><span data-icon="rotate"></span></button>
+      <button id="home-view" aria-label="回到城市中心" title="城市中心"><span data-icon="focus"></span></button>
+    </nav>
+
+    <nav class="overlay-controls glass" id="map-layers" aria-label="城市信息图层">
+      <button id="overlay-toggle" class="overlay-toggle" aria-expanded="true" aria-controls="overlay-options" aria-label="收起图层栏" title="收起图层栏"><span data-icon="layers"></span><span id="overlay-toggle-text">收起</span><span class="overlay-toggle-chevron" data-icon="chevron"></span></button>
+      <div id="overlay-options" class="overlay-options">
+      <button data-overlay="none" aria-pressed="true">城市</button>
+      <button data-overlay="traffic" aria-pressed="false">交通</button>
+      <button data-overlay="power" aria-pressed="false">电力</button>
+      <button data-overlay="water" aria-pressed="false">供水</button>
+      <button data-overlay="pollution" aria-pressed="false">污染</button>
+      <button data-overlay="fire" aria-pressed="false">消防</button>
+      </div>
+    </nav>
+    <div id="overlay-legend" class="overlay-legend glass" hidden></div>
+    <div class="mobile-map-triggers">
+      <button id="mobile-layers-toggle" class="glass" aria-expanded="false" aria-controls="map-layers"><span data-icon="layers"></span><span id="mobile-layer-label">图层 · 城市</span></button>
+      <button id="mobile-view-toggle" class="glass" aria-expanded="false" aria-controls="map-view-controls"><span data-icon="focus"></span>视角</button>
+    </div>
+
+    <div class="tool-context glass" id="tool-context"><span data-icon="pointer"></span><span id="tool-context-text">点击建筑查看详情 · 中键或空格拖动地图</span><span id="preview-cost"></span><button id="undo" class="plain-icon" aria-label="撤销最近一次建设" title="暂停施工时可撤销（Ctrl / Cmd + Z）" disabled><span data-icon="undo"></span></button></div>
+    <nav class="build-toolbar glass" id="build-toolbar" aria-label="建设工具"></nav>
+    <div class="mobile-toolbar-hint" aria-hidden="true">建设工具 <span>左右滑动查看更多 →</span></div>
+    <div class="bottom-caption"><span id="save-state">本地单人城市</span><span>双指捏合 / 滚轮缩放 · 中键 / 空格平移 · 右键拖动旋转 · Esc 取消</span><span id="coordinate">河湾 · 2026</span></div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+    <div id="map-tooltip" class="glass" hidden></div>
+    <section id="onboarding-card" class="onboarding-card glass" aria-label="建城引导" hidden>
+      <div class="onboarding-heading"><span id="onboarding-count">建城第一课</span><button id="onboarding-details" class="text-button" aria-expanded="false" aria-controls="onboarding-description">说明</button><button id="onboarding-skip" class="text-button">跳过引导</button></div>
+      <h2 id="onboarding-title"></h2>
+      <p id="onboarding-description"></p>
+      <div id="onboarding-status" role="status" aria-live="polite"></div>
+      <div class="onboarding-meter" id="onboarding-meter" role="progressbar" aria-label="当前施工进度" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
+      <div class="onboarding-actions"><button id="onboarding-action" class="primary-button"></button><button id="onboarding-locate" class="secondary-button">看推荐位置</button></div>
+      <small id="onboarding-clock"></small>
+    </section>
+    <section id="resident-journey" class="resident-journey glass" aria-label="居民出行路线" hidden>
+      <div class="journey-heading"><strong id="journey-title"></strong><button id="journey-close" class="plain-icon" aria-label="收起出行路线">×</button></div>
+      <p id="journey-summary"></p>
+      <small>箭头表示方向 · 橙色路段较拥堵</small>
+      <div class="journey-actions"><button id="journey-fit">看全程</button><button id="journey-origin">出发地</button><button id="journey-destination">目的地</button><button id="journey-return">看回家路线</button></div>
+    </section>
+
+  </main>
+
+  <dialog id="festival-calendar" aria-labelledby="festival-calendar-title">
+    <div class="dialog-heading"><h2 id="festival-calendar-title">年度节庆日历</h2><button id="close-festival-calendar" class="plain-icon" aria-label="关闭节庆日历">×</button></div>
+    <p id="festival-calendar-note" class="muted"></p>
+    <section id="dragon-race-panel" aria-label="端午龙舟竞猜"></section>
+    <section id="festival-rewards" aria-label="节庆装饰兑换"></section>
+    <div id="festival-calendar-months"></div>
+  </dialog>
+  <dialog id="citizen-dialog" class="citizen-dialog" aria-labelledby="citizen-title">
+    <button class="icon-button dialog-floating-close" data-close-dialog aria-label="结束聊天"><span data-icon="close"></span></button>
+    <div class="dialog-heading citizen-heading">
+      <div><div class="eyebrow">街头见闻 · 城市里的小故事</div><h2 id="citizen-title">和市民聊聊</h2></div>
+    </div>
+    <div id="citizen-content"></div>
+    <div class="dialog-footer citizen-footer">
+      <button class="text-button" id="next-citizen">换个人聊聊 <span data-icon="arrow"></span></button>
+      <button class="secondary-button" data-close-dialog>回到街头</button>
+    </div>
+  </dialog>
+
+  <dialog id="civic-dialog" class="civic-dialog" aria-labelledby="civic-title">
+    <div class="dialog-heading"><div><span class="eyebrow">PUBLIC SERVICES · 公共服务</span><h2 id="civic-title">让城市安心运转</h2></div><button class="plain-icon" data-close-dialog aria-label="关闭城市政务"><span data-icon="close"></span></button></div>
+    <div id="civic-content"></div>
+    <div class="dialog-footer"><button class="text-button" id="civic-show-coverage">查看消防覆盖</button><button class="primary-button" data-close-dialog>回到城市</button></div>
+  </dialog>
+
+  <dialog id="welcome-dialog" class="welcome-dialog">
+    <div class="welcome-tag">一片河湾，无数种可能</div>
+    <h1>亲手建设<span>你的城市</span></h1>
+    <p>铺下第一条路，让一个街区亮起灯。<br>这座城市的下一步，由你决定。</p>
+    <div class="welcome-features"><span><i data-icon="road"></i>亲手规划</span><span><i data-icon="home"></i>自然生长</span><span><i data-icon="trend"></i>用心经营</span></div>
+    <button class="secondary-button welcome-account" id="account-start">登录 / 注册账号<span>单人城市与合作城市，都有归属</span></button>
+    <p id="account-status" class="muted">游客模式 · 单人进度保存在此浏览器</p>
+    <button class="primary-button" id="start-new">从零建设 <span data-icon="arrow"></span></button>
+    <button class="secondary-button" id="start-import">导入城市存档 <span>从已有的 JSON 存档继续建设</span></button>
+    <button class="secondary-button" id="start-demo">体验示范城 <span>接手一座正在生长的小镇</span></button>
+    <button class="text-button" id="continue-save" hidden>继续上次的城市</button>
+    <button class="secondary-button" id="coop-start">好友共建城市 · 合作存档</button><small>游客可单机游玩 · 登录后统一管理你的城市</small>
+  </dialog>
+
+  <dialog id="menu-dialog">
+    <div class="dialog-heading"><div><span class="eyebrow">CITY ARCHIVE</span><h2>你的城市，随时回来</h2></div><button class="plain-icon" data-close-dialog aria-label="关闭菜单"><span data-icon="close"></span></button></div>
+    <div class="coop-tabs"><button class="secondary-button" id="account-menu">账号与我的城市</button><button class="secondary-button" id="coop-menu">好友共建城市</button></div><div class="menu-grid"><button class="menu-action" id="save-manual"><span data-icon="save"></span><span>保存城市<small>保留当前的建设成果</small></span></button><button class="menu-action" id="load-manual"><span data-icon="folder"></span><span>读取手动存档<small id="manual-date">还没有手动存档</small></span></button></div>
+    <h3>自动检查点</h3><div id="checkpoints" class="checkpoint-list"></div>
+    <div class="menu-grid"><button class="secondary-button" id="export-save">导出存档</button><button class="secondary-button" id="import-save">导入存档</button></div>
+    <div class="dialog-footer"><button class="text-button" id="new-game">建设另一座城市</button><button class="primary-button" data-close-dialog>回到城市</button></div>
+  </dialog>
+
+  <dialog id="budget-dialog">
+    <div class="dialog-heading"><div><span class="eyebrow">CITY BUDGET</span><h2>城市财政</h2></div><button class="plain-icon" data-close-dialog aria-label="关闭财政"><span data-icon="close"></span></button></div>
+    <div id="budget-summary"></div>
+    <label class="tax-label" for="tax-rate"><span>城市税率</span><output id="tax-value">9%</output></label><input id="tax-rate" type="range" min="6" max="15" step="1" value="9">
+    <p class="muted">税率同时作用于居民工资税和企业经营税；较高税率会增加收入，也会降低迁入与投资意愿。税收、公共工资和维护费每个模拟月结算一次，暂停时不结算。</p>
+    <div id="loan-info"></div><button class="secondary-button" id="take-loan">申请一次应急贷款 · 6,000</button>
+  </dialog>
+
+  <dialog id="workforce-dialog" class="workforce-dialog" aria-labelledby="workforce-title">
+    <div class="dialog-heading"><div><span class="eyebrow">CITY WORKFORCE · 城市就业</span><h2 id="workforce-title">就业与行业看板</h2></div><button class="plain-icon" data-close-dialog aria-label="关闭就业与行业看板"><span data-icon="close"></span></button></div>
+    <div id="workforce-content"></div>
+    <div class="dialog-footer"><button class="secondary-button" id="workforce-budget">查看城市财政</button><button class="primary-button" data-close-dialog>回到城市</button></div>
+  </dialog>
+
+  <dialog id="catalog-dialog" class="catalog-dialog" aria-labelledby="catalog-title">
+    <div class="dialog-heading"><div><span class="eyebrow">CITY COLLECTION · 城市收藏</span><h2 id="catalog-title">建筑与车辆图鉴</h2></div><button class="plain-icon" data-close-dialog aria-label="关闭城市图鉴"><span data-icon="close"></span></button></div>
+    <div class="catalog-summary" id="catalog-summary"></div>
+    <div class="catalog-tabs" role="tablist" aria-label="图鉴类型"><button type="button" role="tab" data-catalog-tab="building" aria-selected="true">建筑</button><button type="button" role="tab" data-catalog-tab="vehicle" aria-selected="false">车辆</button></div>
+    <div class="catalog-layout">
+      <section class="catalog-preview-panel" aria-label="三维模型展示">
+        <div id="catalog-preview" class="catalog-preview"><div id="catalog-levels" class="catalog-levels" role="group" aria-label="建筑等级" hidden></div></div>
+        <div class="catalog-preview-meta"><div><span id="catalog-preview-status"></span><h3 id="catalog-preview-name">选择一个图鉴条目</h3><p id="catalog-preview-description"></p></div><small>左右拖动旋转 · 双指捏合、按钮或滚轮缩放</small></div>
+        <div class="catalog-rotate-controls" aria-label="模型查看控制"><button type="button" id="catalog-zoom-out" aria-label="缩小模型">− 缩小</button><button type="button" id="catalog-rotate-left" aria-label="向左旋转模型">↶ 左转</button><button type="button" id="catalog-reset-view">回到正面</button><button type="button" id="catalog-rotate-right" aria-label="向右旋转模型">右转 ↷</button><button type="button" id="catalog-zoom-in" aria-label="放大模型">放大 ＋</button></div>
+      </section>
+      <section class="catalog-browser" aria-label="图鉴目录">
+        <div id="catalog-category-filters" class="catalog-category-filters"></div>
+        <div class="catalog-status-filters" role="group" aria-label="解锁状态"><button type="button" data-catalog-status="all" aria-pressed="true">全部</button><button type="button" data-catalog-status="unlocked" aria-pressed="false">已解锁</button><button type="button" data-catalog-status="locked" aria-pressed="false">未解锁</button></div>
+        <div id="catalog-list" class="catalog-list"></div>
+      </section>
+    </div>
+  </dialog>
+
+  <dialog id="help-dialog">
+    <div class="dialog-heading"><div><span class="eyebrow">MAYOR’S FIELD GUIDE</span><h2>从第一条街道开始</h2></div><button class="plain-icon" data-close-dialog aria-label="关闭手册"><span data-icon="close"></span></button></div>
+    <button id="onboarding-open" class="primary-button">打开分步建城引导</button><p class="muted">按这座城市的实际进度继续，可随时跳过。光框只推荐位置，不会替你建设。</p>
+    <ol class="help-steps"><li><b>路要连向城外。</b>从入口延伸道路，住宅和生产、市政服务设施必须临路；公园、广场可直接放在空地。孤立街区不会发展。</li><li><b>给城市接上水电。</b>在路边建设供电站和水塔，查看容量是否足够。</li><li><b>让住、工、商形成循环。</b>拖拽划出住宅，再补充岗位和商店。房屋会按需求自动生长。</li><li><b>问题到地图里找。</b>点击不发展的建筑看原因。交通、供水和污染图层帮助定位。</li><li><b>给另一岸一个机会。</b>选择桥梁并指向河面或岸边；两岸有陆地落点、无建筑阻挡且资金足够，即可花费 ¥3,500 建造整座桥。建好后接上道路。</li><li><b>给路口一点秩序。</b>三岔、十字路口会自动设置信号灯。点击“路口观察”看车辆排队与放行；暂停或加速时，车和灯会一起变化。</li><li><b>听听街头的声音。</b>在查看模式点击行人、车辆或聊天气泡；也可用左侧的街头见闻认识市民，处理抱怨或支持社区活动。</li></ol>
+    <p class="muted"><b>建立公共服务。</b>道路等级只随人口开放；市政府正常办公后开放市政方针和附近住宅覆盖，还负责消防预算与每月一次的安全演练。消防站需要道路和水电，沿道路覆盖居民。打开左侧“城市政务”可调整方针、查看覆盖和出动记录。</p>
+    <div class="keyboard-guide"><span><kbd>1–8</kbd> 常用建设工具</span><span><kbd>M</kbd> 移动建筑或道路</span><span><kbd>P</kbd> 暂停 / 继续</span><span><kbd>Q E</kbd> 旋转 15°</span><span><kbd>右键拖动</kbd> 自由旋转（或 Alt + 左键）</span><span><kbd>Esc</kbd> 取消施工</span><span><kbd>方向键</kbd> 移动施工光标</span><span><kbd>Enter</kbd> 在光标处施工</span></div>
+    <details><summary>精确定位与键盘施工</summary><p class="muted">施工光标默认在入口旁 (8, 32)。选择工具后，用坐标定位或方向键移动，按 Enter 放置。范围工具可用鼠标拖拽。升级工具从道路上按住左键拖动，可整段升级；M 选择建筑或单格道路后，再点击空地搬迁，Esc 取消。公园和广场无需道路水电即可影响周边。</p><div class="coordinate-form"><label>X<input id="target-x" type="number" min="0" max="63" value="8"></label><label>Y<input id="target-y" type="number" min="0" max="63" value="32"></label><button class="secondary-button" id="locate-cell">定位并关闭</button></div></details>
+  </dialog>
+
+  <dialog id="name-dialog" aria-labelledby="identity-title">
+    <form id="name-form">
+      <div class="dialog-heading"><div><span class="eyebrow">CITY IDENTITY · 城市档案</span><h2 id="identity-title">为城市命名，也留下你的名字</h2></div><button class="plain-icon" type="button" data-close-dialog aria-label="关闭城市档案"><span data-icon="close"></span></button></div>
+      <p id="identity-intro" class="identity-intro">这座城市的故事，由你署名。</p>
+      <section id="identity-mayors" class="identity-mayors" aria-label="合作市长名单" hidden></section>
+      <section id="identity-invite" class="coop-invite" aria-label="合作城市邀请" hidden></section>
+      <section id="identity-reputation" aria-label="市长名誉与荣誉"></section>
+      <section id="identity-goal" aria-label="当前任务目标"></section>
+      <label for="name-input">城市名称 <small>最多 24 个字符</small></label>
+      <input id="name-input" type="text" maxlength="24" value="湾畔市" required autocomplete="off" placeholder="给这座城市起个名字">
+      <label id="mayor-label" for="mayor-input">市长姓名 <small>可使用昵称，也可暂不填写</small></label>
+      <input id="mayor-input" type="text" maxlength="24" autocomplete="off" placeholder="你希望市民如何称呼你？">
+      <p id="identity-hint" class="identity-hint">保存后会显示在城市页和政务档案里，并随这座城市的存档保留。你可以随时修改。</p>
+      <p id="identity-error" role="alert" hidden></p>
+      <div class="dialog-footer"><button class="secondary-button" type="button" data-close-dialog>取消</button><button id="identity-save" class="primary-button" type="submit">保存城市档案 <span data-icon="check"></span></button></div>
+    </form>
+  </dialog>
+  <dialog id="confirm-dialog"><h2 id="confirm-title">确认切换城市？</h2><p id="confirm-description"></p><div class="dialog-footer"><button class="secondary-button" id="confirm-cancel">取消</button><button class="primary-button" id="confirm-ok">继续</button></div></dialog>
+  <dialog id="milestone-dialog" aria-labelledby="milestone-title" aria-describedby="milestone-description"></dialog>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
