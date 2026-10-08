@@ -1,5 +1,5 @@
 export const CITY_INCIDENT_TYPES=Object.freeze({
-  robbery:{title:'街区抢劫事件',alert:'失业率过高，街区发生抢劫，居民开始担心夜间安全',solution:'增加可达的商业或工业岗位，恢复稳定就业',radius:5,duration:2,happinessPenalty:9,migrationPenalty:10,demandPenalty:10,severity:'danger'},
+  robbery:{title:'街区抢劫事件',alert:'失业率过高，街区发生抢劫，居民开始担心夜间安全',solution:'增加可达的商业或工业岗位，恢复稳定就业；建设警察局并覆盖街区，降低风险和事件影响',radius:5,duration:2,happinessPenalty:9,migrationPenalty:10,demandPenalty:10,severity:'danger'},
   fire:{title:'建筑失火',alert:'消防覆盖不足，一座建筑发生火灾并暂时影响周边街区',solution:'让消防站接通道路、水电并把覆盖延伸到事发建筑',radius:4,duration:2,happinessPenalty:14,migrationPenalty:14,demandPenalty:9,severity:'danger',targetEfficiency:.45,blockTargetMoveIn:true},
   medical:{title:'社区医疗挤兑',alert:'缺少医疗覆盖，居民就诊延误，社区健康风险上升',solution:'建设或升级诊所、药店、综合医院并覆盖事发住宅',radius:5,duration:2,happinessPenalty:10,migrationPenalty:12,demandPenalty:10,severity:'danger',blockTargetMoveIn:true},
   education:{title:'家庭教育危机',alert:'缺少教育覆盖，适龄家庭开始考虑搬离街区',solution:'建设或升级学校、图书馆并覆盖事发住宅',radius:6,duration:3,happinessPenalty:8,migrationPenalty:11,demandPenalty:8,severity:'warning'},
@@ -42,7 +42,10 @@ export function incidentRisks(state){
   if(population<100||!homes.length)return risks;
   const add=(kind,candidates,pressure,probability,reason)=>{const target=pickTarget(state,kind,candidates);if(target)risks.push({kind,targetId:target.id,x:target.x,y:target.y,pressure:clamp(pressure),probability:clamp(probability,.05,.92),reason});};
   const employmentRate=state.stats?.employmentRate??100,unemployment=1-employmentRate/100;
-  if(population>=200&&employmentRate<80)add('robbery',homes,unemployment,unemployment>=.35?.82:.30+unemployment,`失业率 ${Math.round(unemployment*100)}%`);
+  if(population>=200&&employmentRate<80){
+    const coverage=1-weightedShare(homes,b=>!b.services?.policeStation).share;
+    add('robbery',homes.filter(b=>!b.services?.policeStation).length?homes.filter(b=>!b.services?.policeStation):homes,unemployment*(1-coverage*.7),(unemployment>=.35?.82:.30+unemployment)*(1-coverage*.7),`失业率 ${Math.round(unemployment*100)}% · 治安覆盖 ${Math.round(coverage*100)}%`);
+  }
   const uncovered=privateBuildings(state).filter(b=>!b.fireCovered),protectedPrivate=privateBuildings(state);
   if(population>=500&&uncovered.length){const share=uncovered.length/Math.max(1,protectedPrivate.length);if(share>=.25)add('fire',uncovered,share,.22+share*.58,`未获消防覆盖建筑 ${uncovered.length} / ${protectedPrivate.length}`);}
   for(const [kind,service,minPopulation,base] of [['medical','clinic',500,.26],['education','school',800,.21],['culture','library',2000,.14],['wellness','sportsHall',3000,.14]]){
@@ -77,7 +80,7 @@ export function buildingIncidentEffects(state,b){
   for(const event of ensureCityIncidents(state).active||[]){
     const type=CITY_INCIDENT_TYPES[event.kind];if(!type)continue;
     const distance=Math.hypot(b.x-event.x,b.y-event.y);if(distance>type.radius)continue;
-    const weight=Math.max(.45,1-distance/(type.radius*1.8));effects.kinds.push(event.kind);
+    const weight=Math.max(.45,1-distance/(type.radius*1.8))*(event.kind==='robbery'&&b.services?.policeStation ? .5 : 1);effects.kinds.push(event.kind);
     if(b.type==='residential'){
       effects.happinessPenalty+=Math.round(type.happinessPenalty*weight);
       effects.migrationPenalty+=Math.round(type.migrationPenalty*weight);

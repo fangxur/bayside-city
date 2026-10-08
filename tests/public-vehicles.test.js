@@ -15,7 +15,7 @@ function town(){
 test('the road fleet has distinct proportions and recognizable service liveries',()=>{
   assert.deepEqual(CIVILIAN_VEHICLE_KINDS,['compact','car','hatchback','suv','taxi','minivan']);
   assert.deepEqual(FREIGHT_VEHICLE_KINDS,['delivery-van','pickup','freight']);
-  assert.equal(Object.keys(ROAD_VEHICLE_STYLES).length,11);
+  assert.equal(Object.keys(ROAD_VEHICLE_STYLES).length,13);
   for(const [kind,style] of Object.entries(ROAD_VEHICLE_STYLES)){
     assert(style.label,kind);assert(style.shape,kind);
     for(const field of ['length','width','bodyHeight','cabinLength','cabinHeight','axleOffset'])assert(Number.isFinite(style[field])&&style[field]>0,`${kind}.${field}`);

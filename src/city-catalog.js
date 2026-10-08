@@ -61,6 +61,8 @@ const VEHICLE_BLUEPRINTS=Object.freeze([
   {id:'vehicle:pickup',kind:'vehicle',name:'城市皮卡',category:'road',sourceKind:'freight',minPopulation:500,description:'前排驾驶舱配开放货斗，承担轻量生产与街区配送。',preview:{kind:'roadVehicle',vehicleKind:'pickup'}},
   {id:'vehicle:delivery-van',kind:'vehicle',name:'厢式配送车',category:'road',sourceKind:'freight',minPopulation:1000,description:'封闭高顶货厢和侧面识别带让城市配送更醒目。',preview:{kind:'roadVehicle',vehicleKind:'delivery-van'}},
   {id:'vehicle:freight',kind:'vehicle',name:'城市货车',category:'road',description:'在工业与商业之间运送货物，沿道路通行并遵守路口信号。',preview:{kind:'roadVehicle',vehicleKind:'freight'}},
+  {id:'vehicle:police',kind:'vehicle',name:'城市警车',category:'service',description:'警察局正常运行后沿道路巡逻，抢劫事件发生时赶往现场。',preview:{kind:'roadVehicle',vehicleKind:'police'}},
+  {id:'vehicle:bus',kind:'vehicle',name:'城市公交车',category:'service',description:'两座正常运行的公交站接通同一道路网络后自动开通往返公交，减少沿线通勤车流。',preview:{kind:'roadVehicle',vehicleKind:'bus'}},
   {id:'vehicle:ambulance',kind:'vehicle',name:'城市救护车',category:'service',description:'由正常运行的诊所或医院派出，平时巡行，医疗事件发生时赶往现场。',preview:{kind:'roadVehicle',vehicleKind:'ambulance'}},
   {id:'vehicle:fire-engine',kind:'vehicle',name:'城市消防车',category:'service',description:'由正常运行的消防站派出，平时巡行，火灾发生时赶往现场。',preview:{kind:'roadVehicle',vehicleKind:'fire-engine'}},
   ...Object.entries(YACHT_TYPES).map(([yachtKind,item])=>({id:`vehicle:yacht:${yachtKind}`,kind:'vehicle',name:item.name,category:'water',description:yachtKind==='cruiser'?'居民拥有的豪华游艇，会从码头出航并返回泊位。':'居民拥有的小型游艇，会从码头出航并返回泊位。',preview:{kind:'yacht',yachtKind}})),
@@ -89,6 +91,10 @@ function vehicleEntries(state){
     }else if(type==='freight'){
       count=routes.filter(route=>route.kind==='freight').length;unlocked=count>0;
       reason='工业与商业形成可达货运路线后解锁';
+    }else if(type==='police'||type==='bus'){
+      count=publicRoutes.filter(route=>route.kind===type).length;
+      unlocked=type==='police'?state.buildings.some(b=>b.type==='policeStation'&&operating(b)):count>0;
+      reason=type==='police'?'警察局完成施工并接通道路、水电后解锁':'两座公交站完成施工，接通同一道路网络与水电后解锁';
     }else if(type==='ambulance'){
       unlocked=state.buildings.some(building=>['clinic','hospital'].includes(building.type)&&operating(building));
       count=publicRoutes.filter(route=>route.kind==='ambulance').length;reason='让诊所或医院完成施工并接通道路、水电后解锁';

@@ -116,7 +116,7 @@ test('a four-lane boulevard requires both parallel roads to be upgraded', () => 
     const pair = tiles.filter(t => (vertical ? t.y : t.x) === 8);
     const lanes = pair.map(t => boulevardLanes(t, layout.get(`${t.x},${t.y}`)));
     assert.equal(lanes[0].direction, -lanes[1].direction);
-    assert.equal(lanes[0].direction, vertical ? -1 : 1);
+    assert.equal(lanes[0].direction, vertical ? 1 : -1);
     const centers = pair.flatMap((t, i) => lanes[i].centers.map(offset => (vertical ? t.x : t.y) + offset)).sort((a, b) => a - b);
     assert.equal(centers.length, 4);
     for (let i = 1; i < centers.length; i++) assert(Math.abs(centers[i] - centers[i - 1] - .43) < 1e-9);

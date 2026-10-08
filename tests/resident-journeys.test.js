@@ -6,6 +6,7 @@ import {getCitizenStory} from '../src/city-life.js';
 import {residentCommute,walkingPath} from '../src/resident-journeys.js';
 import {ResidentRouteOverlay} from '../src/resident-route-rendering.js';
 import {CityRenderer} from '../src/renderer.js';
+import {planPedestrians} from '../src/pedestrian-plans.js';
 
 function town(){
   const sim=new CitySimulation();sim.state.money=100000;
@@ -111,6 +112,28 @@ test('rendered walkers keep their real home and follow the entire selected outin
   for(const key of ['walkerBodies','walkerHeads','walkerHair','walkerArms','walkerLegs'])r[key].dispose();geometry.dispose();material.dispose();
 });
 
+test('preplanned walkers render without repeating story or route searches and retain animation progress',()=>{
+  const sim=town(),plans=planPedestrians(sim.state),before=structuredClone(plans);
+  assert(plans.people.length>0);
+  const r=Object.create(CityRenderer.prototype),geometry=new THREE.BoxGeometry(),material=new THREE.MeshBasicMaterial();
+  Object.assign(r,{state:sim.state,pedestrians:[],pedestrianCapacity:96,actorById:new Map(),paused:false,carDummy:new THREE.Object3D()});
+  const keys=['walkerBodies','walkerHeads','walkerHair','walkerArms','walkerLegs'];
+  for(const key of keys)r[key]=new THREE.InstancedMesh(geometry,material,192);
+  r._setPedestrians();
+  const paths=r.pedestrians.map(p=>({id:p.id,points:p.points,path:p.path}));
+  r._animatePedestrians(1);
+  const progress=r.pedestrians.map(p=>p.travel);
+  r.state=new Proxy(sim.state,{get(target,key){
+    if(key==='buildings'||key==='routes')throw Error('Outing planning ran on the rendering thread');
+    return Reflect.get(target,key);
+  }});
+  r._setPedestrians(structuredClone(plans));
+  assert.deepEqual(r.pedestrians.map(p=>({id:p.id,points:p.points,path:p.path})),paths);
+  assert.deepEqual(r.pedestrians.map(p=>p.travel),progress);
+  assert.deepEqual(plans,before);
+  for(const key of keys)r[key].dispose();geometry.dispose();material.dispose();
+});
+
 test('journey overlay draws bridges above water, updates congestion and disposes replaced geometry',()=>{
   const sim=town(),home=sim.state.buildings.find(b=>b.type==='residential'),trip=residentCommute(sim.state,home,1);
   const scene=new THREE.Scene(),overlay=new ResidentRouteOverlay(scene);
@@ -124,17 +147,20 @@ test('journey overlay draws bridges above water, updates congestion and disposes
   overlay.dispose();assert.equal(scene.children.length,0);
 });
 
-test('a job across the same road cell is a short outing, without sending the walker on a different route',()=>{
+test('a job across the road takes the walker to a zebra crossing, with a matching story and return route',()=>{
   const sim=new CitySimulation();
   for(const [type,x]of [['power',1],['water',2]])sim._newBuilding(x,31,type,true);
   const home=sim._newBuilding(5,31,'residential',true);home.population=8;
+  for(let y=29;y<=35;y++)sim.tile(2,y).road=1;
   sim._newBuilding(5,33,'commercial',true);sim.recalculate();
   const r=Object.create(CityRenderer.prototype),geometry=new THREE.BoxGeometry(),material=new THREE.MeshBasicMaterial();
   Object.assign(r,{state:sim.state,pedestrians:[],pedestrianCapacity:96,actorById:new Map(),paused:false,carDummy:new THREE.Object3D()});
   const keys=['walkerBodies','walkerHeads','walkerHair','walkerArms','walkerLegs'];
   for(const key of keys)r[key]=new THREE.InstancedMesh(geometry,material,192);
-  r._setPedestrians();const walker=r.pedestrians[0];assert(walker);assert.equal(walker.points.length,1);assert.equal(walker.path.length,2);
+  r._setPedestrians();const walker=r.pedestrians[0];assert(walker);assert(walker.points.length>1);assert(walker.path.some(p=>p.crossing));
+  assert(walker.path.filter(p=>p.crossing).every(p=>Math.abs(p.x-(2.6-31.5))<1e-9));
   r._animatePedestrians(3);assert(walker.position.toArray().every(Number.isFinite));
-  const story=getCitizenStory(sim.state,r._actorDescriptor(walker));assert.equal(story.journey.roadCells,1);assert.equal(story.home.id,home.id);
+  const story=getCitizenStory(sim.state,r._actorDescriptor(walker));assert.equal(story.journey.roadCells,walker.points.length);assert.equal(story.home.id,home.id);
+  assert.deepEqual(story.journey.sidewalk.map(p=>[p.x-31.5,p.y-31.5]),(walker.returning?[...walker.path].reverse():walker.path).map(p=>[p.x,p.z]));
   for(const key of keys)r[key].dispose();geometry.dispose();material.dispose();
 });

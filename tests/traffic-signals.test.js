@@ -9,6 +9,17 @@ const crossroads = () => roadTiles([...line(6, 10, 14, 10), ...line(10, 6, 10, 1
 const vehicle = (id, points, travel = 0, reverse = false, kind = 'car') => ({ id, points, travel, reverse, kind });
 const controller = (cars, tiles = crossroads()) => { const c = new TrafficController(); c.sync(tiles, cars); return c; };
 
+test('traffic updates reuse road geometry but refresh phases and invalidate structural changes',()=>{
+ const tiles=crossroads(),c=controller([],tiles),wide=c.wideRoads,intersections=c.intersections;
+ c.time=8;const updated=structuredClone(tiles);updated[0].traffic=90;c.sync(updated,[]);
+ assert.equal(c.wideRoads,wide);assert.equal(c.intersections,intersections);
+ assert.equal(c._tiles.get(`${updated[0].x},${updated[0].y}`),updated[0]);
+ assert.equal(c.signals[0].phase,signalPhaseAt(c.time,c.signals[0].offset).phase);
+ updated.find(t=>t.x===10&&t.y===10).bridge=true;c.sync(updated,[]);
+ assert.notEqual(c.wideRoads,wide);assert.equal(c.signals.length,0);
+ const changed=c.wideRoads;updated[0].road=3;c.sync(updated,[]);assert.notEqual(c.wideRoads,changed);
+});
+
 test('only real land T and four-way junctions get signals; turns, straight roads and bridges do not', () => {
   assert.equal(detectIntersections(roadTiles(line(2, 2, 8, 2))).length, 0);
   assert.equal(detectIntersections(roadTiles([...line(2, 2, 5, 2), ...line(5, 2, 5, 5)])).length, 0);

@@ -1,3 +1,5 @@
+import {vehicleLanePose} from './vehicle-routing.js';
+import {validRoadPath} from './interchanges.js';
 import { wideRoadLayout } from './city-layout.js';
 import {DEFAULT_MAP_SIZE,mapSize} from './grid.js';
 
@@ -19,7 +21,7 @@ const key = p => `${p.x},${p.y}`;
 const finitePoint = (p,size=DEFAULT_MAP_SIZE) => p && Number.isInteger(p.x) && Number.isInteger(p.y) && p.x >= 0 && p.x < size && p.y >= 0 && p.y < size;
 const DIRECTIONS = [['N', 0, -1], ['E', 1, 0], ['S', 0, 1], ['W', -1, 0]];
 const phaseOffset = (x, y) => ((x * 11 + y * 13 + 10) % 35) / 2;
-const bodyLength = car => car.kind === 'fire-engine' ? 0.48 : car.kind === 'ambulance' ? 0.43 : car.kind === 'freight' ? 0.45 : 0.35;
+const bodyLength = car => car.kind === 'bus' ? .78 : car.kind === 'police' ? .46 : car.kind === 'fire-engine' ? 0.48 : car.kind === 'ambulance' ? 0.43 : car.kind === 'freight' ? 0.45 : 0.35;
 const minimumGap = (a, b) => (bodyLength(a) + bodyLength(b)) / 2 + 0.13;
 
 export function signalPhaseAt(time, offset = 0) {
@@ -31,12 +33,12 @@ export function signalPhaseAt(time, offset = 0) {
   return { phase: 'ns-green', ns: 'green', ew: 'red', remaining: 6 };
 }
 
-export function detectIntersections(tiles) {
+export function detectIntersections(tiles,wide) {
   if (!Array.isArray(tiles)) return [];
   const size=mapSize({tiles});
-  const wide = wideRoadLayout(tiles);
+  wide??=wideRoadLayout(tiles);
   const byPosition = new Map(tiles.filter(t => finitePoint(t,size) && t.road).map(t => [key(t), t]));
-  return [...byPosition.values()].filter(t => t.terrain === 'land' && !t.bridge).flatMap(t => {
+  return [...byPosition.values()].filter(t => t.terrain === 'land' && !t.bridge && !t.interchange).flatMap(t => {
     const layout = wide.get(key(t));
     if (layout && !layout.junction) return [];
     const arms = DIRECTIONS.filter(([, dx, dy]) => byPosition.has(`${t.x + dx},${t.y + dy}`)).map(([name]) => name);
@@ -56,8 +58,14 @@ export class TrafficController {
 
   sync(tiles, cars = []) {
     this.gridSize=mapSize({tiles});
+    const topologyKey=this.gridSize+'|'+(Array.isArray(tiles)?tiles:[]).filter(t=>t.road).map(t=>JSON.stringify([t.x,t.y,t.road,t.terrain,!!t.bridge,t.interchange])).join('|');
+    if(topologyKey!==this.topologyKey){
+      this.topologyKey=topologyKey;
+      this.wideRoads=wideRoadLayout(tiles);
+      this.intersections=detectIntersections(tiles,this.wideRoads);
+    }
     this._tiles = new Map((Array.isArray(tiles) ? tiles : []).filter(t => finitePoint(t,this.gridSize)).map(t => [key(t), t]));
-    this.signals = detectIntersections(tiles).map(signal => ({ ...signal, ...signalPhaseAt(this.time, signal.offset), waiting: 0 }));
+    this.signals = this.intersections.map(signal => ({ ...signal, ...signalPhaseAt(this.time, signal.offset), waiting: 0 }));
     this._signals = new Map(this.signals.map(signal => [key(signal), signal]));
     // Adjacent T/cross junctions have overlapping stop/clear zones. Reserve
     // the whole connected cluster atomically instead of allowing AB/BA locks.
@@ -82,6 +90,7 @@ export class TrafficController {
       if (!input || !['string', 'number'].includes(typeof input.id) || !Array.isArray(input.points) || input.points.length < 2 || input.points.length > this.gridSize ** 2 || next.has(input.id)) continue;
       const source = input.points;
       if (source.some((p, i) => !finitePoint(p,this.gridSize) || !this._tiles.get(key(p))?.road || (i > 0 && Math.abs(p.x - source[i - 1].x) + Math.abs(p.y - source[i - 1].y) !== 1))) continue;
+      if(!validRoadPath({tiles},source))continue;
       const signature = `${input.reverse ? 'R' : 'F'}:${source.map(key).join(';')}`;
       const points = (input.reverse ? [...source].reverse() : source).map(p => ({ x: p.x, y: p.y }));
       const old = previous.get(input.id);
@@ -137,7 +146,7 @@ export class TrafficController {
     const car = this._cars.get(id);
     if (!car) return null;
     const pose = this._pose(car);
-    return { ...pose, distance: car.reverse ? car.points.length - 1 - car.distance : car.distance,
+    return { ...pose, lanePose:vehicleLanePose(car.points,car.distance,this.wideRoads), distance: car.reverse ? car.points.length - 1 - car.distance : car.distance,
       visible: car.visible, waiting: car.waiting, reason: car.reason };
   }
 
@@ -207,7 +216,7 @@ export class TrafficController {
       if (!car.visible) continue;
       const pose = this._pose(car);
       const tile = this._tiles.get(`${Math.round(pose.x)},${Math.round(pose.y)}`);
-      const baseSpeed=car.kind==='fire-engine' ? .84 : car.kind==='ambulance' ? .96 : car.kind==='freight' ? .70 : .90;
+      const baseSpeed=car.kind==='bus' ? .72 : car.kind==='police' ? .96 : car.kind==='fire-engine' ? .84 : car.kind==='ambulance' ? .96 : car.kind==='freight' ? .70 : .90;
       const speed = baseSpeed / (1 + (tile?.traffic || 0) / 180);
       const requested = car.distance + speed * dt;
       let target = Math.min(requested, this._leaderLimit(car, snapshots));

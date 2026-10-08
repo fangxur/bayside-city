@@ -149,11 +149,11 @@ test('routes follow adjacent connected roads and raw loads determine the traffic
   assert(s.state.routes.some(r => r.kind === 'freight'));
   for (const r of s.state.routes) {
     assert(r.load > 0);
-    for (let i = 0; i < r.points.length; i++) {
-      const p = r.points[i]; const t = s.tile(p.x, p.y);
+    for (const path of [r.points,r.returnPoints]) for (let i = 0; i < path.length; i++) {
+      const p = path[i]; const t = s.tile(p.x, p.y);
       assert(t.road && t.connected);
-      if (i) assert.equal(Math.abs(p.x - r.points[i - 1].x) + Math.abs(p.y - r.points[i - 1].y), 1);
-      const key = `${p.x},${p.y}`; expected.set(key, (expected.get(key) || 0) + r.load);
+      if (i) assert.equal(Math.abs(p.x - path[i - 1].x) + Math.abs(p.y - path[i - 1].y), 1);
+      const key = `${p.x},${p.y}`; expected.set(key, (expected.get(key) || 0) + (r.walking?0:r.load/2));
     }
   }
   for (const t of s.state.tiles.filter(t => t.road)) {

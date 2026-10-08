@@ -1,3 +1,6 @@
+import {pedestrianCrossings} from './pedestrian-routing.js';
+import {planPedestrians,PEDESTRIAN_CAPACITY} from './pedestrian-plans.js';
+import {vehicleLanePose} from './vehicle-routing.js';
 import {onboardingMapRegion} from './onboarding-layout.js';
 import {NightLighting,nightAmount,isLuminousPart,isFountainPart,isLandmarkLight,isLandmarkWash,LANDMARK_LIGHT_COLORS,LIGHTING_MODES} from './night-lighting.js';
 import {matchesBuildingFilter,BUILDING_FILTERS} from './building-filter.js';
@@ -9,6 +12,7 @@ import {drawOffice,officeHeight} from './office-architecture.js';
 import {rotatedBuildingBatch} from './building-rotation.js';
 import {marinaBerths,yachtRoutes} from './marina.js';
 import {createYachtModel,updateYachtActor} from './yacht-rendering.js';
+import {RoadVehicleLighting} from './vehicle-lighting.js';
 import {SERVICE_LAYERS,MAP_LAYER_BUILDING_COLORS,serviceLayerCell,mapLayerBuildings} from './map-layers.js';
 import { DECORATIONS } from './decorations.js';
 import {drawEuropeanSculpture,isSculptureWash,sculptureWashColor} from './european-sculptures.js';
@@ -18,7 +22,6 @@ import {drawSpecialtyShop, specialtyShopHeight} from './commercial-architecture.
 import {drawSpecialtyFactory, specialtyFactoryHeight} from './industrial-architecture.js';
 import { buildingStyle, residentialRoof } from './building-styles.js';
 import { footprintSize, buildingCells } from './building-footprint.js';
-import {getCitizenStory} from './city-life.js';
 import {ResidentRouteOverlay} from './resident-route-rendering.js';
 import {OnboardingOverlay} from './onboarding-rendering.js';
 import { COMMUNITY_BUILDINGS } from './community-buildings.js';
@@ -28,6 +31,8 @@ import { TrafficController, detectIntersections } from './traffic-signals.js';
 import { wideRoadLayout, civicGardenGroups, boulevardLanes, privateBuildingGroups, rowBuildingHeight } from './city-layout.js';
 import { ROAD_TIERS, upgradeOffer } from './progression.js';
 import {fireEffectLayout} from './fire-rendering.js';
+import {roadElevation,interchangeBounds,interchangeAt,INTERCHANGE_HEIGHT,validRoadPath,groundRoadAccess} from './interchanges.js';
+import {InterchangeDirectionGuide} from './interchange-direction-guide.js';
 import {CIVILIAN_VEHICLE_KINDS,FREIGHT_VEHICLE_KINDS,ROAD_VEHICLE_STYLES,isPublicVehicleKind,publicVehicleRoutes} from './public-vehicles.js';
 import {MAX_MAP_SIZE,gridIndex,gridPoint,inGrid,mapSize} from './grid.js';
 
@@ -167,6 +172,7 @@ export class CityRenderer {
     this.canvas.tabIndex = 0;
     this.canvas.style.cssText = 'display:block;width:100%;height:100%;outline:none;touch-action:none;';
     container.appendChild(this.canvas);
+    this.directionGuide=new InterchangeDirectionGuide(container);
 
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .88, metalness: 0, flatShading: true });
     this.geometries = {
@@ -232,7 +238,8 @@ export class CityRenderer {
     const height = Math.max(1, this.container.clientHeight);
     this.renderer.setSize(width, height, false);
     this.aspect = width / height;
-    this._updateCamera();
+    if(this.interchangeFrame)this.frameInterchange(this.interchangeFrame);
+    else this._updateCamera();
   }
 
   _updateCamera() {
@@ -252,7 +259,7 @@ export class CityRenderer {
     return this.state?.tiles[gridIndex(this.state,x,y)] || null;
   }
 
-  setState(state, {sameWorld=false} = {}) {
+  setState(state, {sameWorld=false,pedestrianPlans,publicRoutes} = {}) {
     // Shared-city snapshots replace the state object without changing cities.
     // Keep pointer capture and the active stroke across those normal updates.
     const changedWorld = this.state && this.state !== state && !sameWorld;
@@ -280,8 +287,9 @@ export class CityRenderer {
     }
     const buildingKey = (state.buildings || []).map(b => `${b.id}:${b.rotation??'auto'}:${b.type}:${footprintSize(b)}:${b.businessKind||''}:${b.variant}:${b.x}:${b.y}:${b.level}:${Math.min(4, Math.floor((b.progress ?? 1) * 4))}:${b.active !== false ? 1 : 0}`).join('|');
     const tileKey = state.tiles.map(t => `${t.road || 0}${t.zone ? t.zone[0] : '.'}${t.buildingId ?? ''}:${t.vegetation??''}`).join(',');
+    const interchangeKey=(state.interchanges||[]).map(i=>`${i.x},${i.y}:${i.axis}:${i.width??3},${i.height??3}`).join('|');
     const incidentKey=(state.cityIncidents?.active||[]).map(event=>`${event.id}:${event.kind}:${event.targetId}`).join('|');
-    const cityKey = `${terrainKey}|${tileKey}|${buildingKey}|${state.festivalGames?.decoration||''}|${incidentKey}`;
+    const cityKey = `${terrainKey}|${tileKey}|${buildingKey}|${interchangeKey}|${state.festivalGames?.decoration||''}|${incidentKey}`;
     if (cityKey !== this.cityKey) {
       this.cityKey = cityKey;
       this._buildCity();
@@ -291,17 +299,17 @@ export class CityRenderer {
     this._buildLayerBuildingHighlights();
     this._buildSelectedCoverage();
     this._syncUpgradeMarkers();
-    const vehicleRoutes=[...publicVehicleRoutes(state),...(state.routes||[])];
-    const routeKey = vehicleRoutes.map(r => `${r.kind}:${r.vehicleKind||''}:${r.homeId||''}:${r.workplaceId||''}:${r.facilityId||''}:${r.targetId||''}:${r.incidentId||''}:${r.load}:${r.points?.map(p => `${p.x},${p.y}`).join(';')}`).join('|');
+    const vehicleRoutes=[...(publicRoutes??publicVehicleRoutes(state)),...(state.routes||[])];
+    const routeKey = vehicleRoutes.map(r => `${r.kind}:${r.vehicleKind||''}:${r.homeId||''}:${r.workplaceId||''}:${r.facilityId||''}:${r.targetId||''}:${r.incidentId||''}:${r.walking||false}:${r.load}:${r.points?.map(p => `${p.x},${p.y}`).join(';')}:${r.returnPoints?.map(p=>`${p.x},${p.y}`).join(';')}`).join('|');
     const routesChanged = routeKey !== this.routeKey;
     if (routesChanged) { this.routeKey = routeKey; this._setRoutes(vehicleRoutes); }
-    const signalRoadKey = state.tiles.map(t => `${t.road || 0}${t.terrain === 'water' ? 'w' : ''}`).join(',');
+    const signalRoadKey = interchangeKey+'|'+state.tiles.map(t => `${t.road || 0}${t.terrain === 'water' ? 'w' : ''}`).join(',');
     if (signalRoadKey !== this.signalRoadKey) {
       this.signalRoadKey = signalRoadKey;
       if (!routesChanged) this._syncTrafficController();
     }
-    const pedestrianKey = `${tileKey}|${buildingKey}|${state.month}|${(state.buildings || []).filter(b => b.type === 'residential' && b.population > 0).map(b => `${b.id}:${b.population >= 16 ? 2 : 1}:${b.powered}:${b.watered}`).join('|')}|${routeKey}`;
-    if (pedestrianKey !== this.pedestrianKey) { this.pedestrianKey = pedestrianKey; this._setPedestrians(); }
+    const pedestrianKey = `${tileKey}|${buildingKey}|${interchangeKey}|${state.month}|${(state.buildings || []).filter(b => b.type === 'residential' && b.population > 0).map(b => `${b.id}:${b.population >= 16 ? 2 : 1}:${b.powered}:${b.watered}`).join('|')}|${routeKey}`;
+    if (pedestrianKey !== this.pedestrianKey) { this.pedestrianKey = pedestrianKey; this._setPedestrians(pedestrianPlans); }
     this._syncCivicIncident();
   }
 
@@ -510,6 +518,14 @@ export class CityRenderer {
       const color={residential:0x76ed9e,commercial:0x5ddcff,industrial:0xffcf57}[this.buildingFilter];
       for(const side of [-1,1]){batch.box(color,x+side*(n/2-.03),.10,z,.06,.07,n);batch.box(color,x,.10,z+side*(n/2-.03),n,.07,.06);}
     }
+    if(!this.state.catalogRoadsHidden)for(const crossing of pedestrianCrossings(this.state)){
+      const vertical=crossing.direction%2===1,extent=vertical?crossing.end.y-crossing.start.y:crossing.end.x-crossing.start.x;
+      const count=Math.max(3,Math.round((extent-.18)/.11)),length=extent-.18;
+      for(let i=0;i<count;i++){
+        const step=.09+length*(i+.5)/count;
+        batch.box(0xece7d2,wx(crossing.start.x+(vertical?0:step)),.082,wx(crossing.start.y+(vertical?step:0)),vertical?.11:.06,.009,vertical?.06:.11);
+      }
+    }
     batch.finish(this.cityGroup);
     this._buildFireIncidentEffects(visibleBuildings);
     this.nightLighting?.rebuild(this.cityGroup,this.state,this.buildingFilter,this.roadFocus);
@@ -555,6 +571,7 @@ export class CityRenderer {
   }
 
   _road(batch, tile, x, z) {
+    if(tile.interchange){this._interchangeRoad(batch,tile,x,z);return;}
     const neighbor = (dx, dy) => !!this._tile(tile.x + dx, tile.y + dy)?.road;
     const n = neighbor(0, -1), s = neighbor(0, 1), e = neighbor(1, 0), w = neighbor(-1, 0);
     const y = tile.terrain === 'water' ? .15 : .036;
@@ -567,8 +584,8 @@ export class CityRenderer {
     }
     batch.box(style.sidewalk, x, y, z, 1.001, .058, 1.001);
     batch.box(style.asphalt, x, y + .033, z, .72, .014, .72);
-    if (n || s || (!e && !w)) batch.box(style.asphalt, x, y + .033, z, .72, .014, 1.001);
-    if (e || w) batch.box(style.asphalt, x, y + .033, z, 1.001, .014, .72);
+    if(n||s){const top=n?.501:.36,bottom=s?.501:.36;batch.box(style.asphalt,x,y+.033,z+(bottom-top)/2,.72,.014,top+bottom);}
+    if(e||w){const left=w?.501:.36,right=e?.501:.36;batch.box(style.asphalt,x+(right-left)/2,y+.033,z,left+right,.014,.72);}
     const degree = +n + +s + +e + +w;
     const mark = upgraded ? 0xeadfa9 : 0xdedcc7;
     if (degree <= 2) {
@@ -578,13 +595,6 @@ export class CityRenderer {
       } else if ((e || w) && !(n || s)) {
         batch.box(mark, x, y + .043, z, .27, .008, .023);
         if (upgraded) batch.box(mark, x, y + .043, z + .047, .27, .008, .015);
-      }
-    } else if (!tile.bridge) {
-      for (const [dx, dz, on] of [[0, -1, n], [0, 1, s], [1, 0, e], [-1, 0, w]]) {
-        if (!on) continue;
-        for (let a = 0; a < 5; a++) {
-          batch.box(0xece7d2, x + dx * .34 + (dz ? (a - 2) * .11 : 0), y + .046, z + dz * .34 + (dx ? (a - 2) * .11 : 0), dz ? .06 : .11, .009, dx ? .06 : .11);
-        }
       }
     }
     if (tile.terrain === 'water') {
@@ -600,6 +610,67 @@ export class CityRenderer {
     } else if (tile.road < 3 && (tile.x + tile.y * 3) % 6 === 0 && degree <= 2) {
       const side = (n || s) && !(e || w);
       this._lamp(batch, x + (side ? .43 : .08), z + (side ? .08 : .43), y);
+    }
+  }
+
+  _interchangeRoad(batch,tile,x,z){
+    const item=tile.interchange,ew=item.axis==='ew',style=ROAD_TIERS[tile.road],b=interchangeBounds(item);
+    const cross=ew?tile.y-b.cy:tile.x-b.cx,along=ew?tile.x-b.cx:tile.y-b.cy;
+    const crossCount=ew?b.height:b.width,alongCount=ew?b.width:b.height;
+    const edge=Math.abs(cross)===(crossCount-1)/2,side=Math.sign(cross);
+    const elevation=offset=>roadElevation(this.state,tile.x+(ew?offset:0),tile.y+(ew?0:offset),item.axis);
+    const fixed=(color,offset,lateral,h,width,thickness,span,kind='box')=>batch.add(kind,color,x+(ew?offset:lateral),h,z+(ew?lateral:offset),ew?span:width,thickness,ew?width:span);
+    const markings=(position,count,draw)=>{
+      for(const line of [-.034,.034])if(line>=position-.5&&line<position+.5)draw(line-position,false);
+      for(let n=1;n<count;n++){const line=-count/2+n;if(Math.abs(line)>.05&&line>=position-.5&&line<position+.5)draw(line-position,true);}
+    };
+    if(item.core){
+      batch.add('flat',style.asphalt,x,.069,z,1.001,.014,1.001);
+      markings(along,alongCount,(offset,dashed)=>fixed(dashed?0xf1eee0:0xedce77,offset,0,.080,dashed?.34:1.001,.006,.019,'flat'));
+    }
+    const slices=item.core?1:12;
+    for(let i=0;i<slices;i++){
+      const from=-.5+i/slices,to=from+1/slices,offset=(from+to)/2;
+      const h0=elevation(from),h1=elevation(to),slope=Math.atan2(h1-h0,to-from),height=(h0+h1)/2;
+      const length=Math.hypot(to-from,h1-h0)+.002;
+      const part=(color,lateral,h,width,thickness,kind='box')=>batch.add(kind,color,x+(ew?offset:lateral),height+h,z+(ew?lateral:offset),ew?length:width,thickness,ew?width:length,0,ew?0:-slope,ew?slope:0);
+      part(0xc6cdc4,0,.023,1.002,.075);
+      part(style.asphalt,0,.069,1.002,.014,'flat');
+      markings(cross,crossCount,(lateral,dashed)=>{if(!dashed||!item.core&&Math.abs(offset)<.17)part(dashed?0xf1eee0:0xedce77,lateral,.080,.020,.006,'flat');});
+      if(edge){
+        part(0xe0e3d8,side*.405,.083,.18,.021);
+        part(0xf1eee0,side*.297,.081,.022,.006,'flat');
+        part(0xd8ded3,side*.488,.048,.052,.135);
+        part(0x507a78,side*.518,.062,.012,.034);
+        part(0xb5c7bf,side*.459,.136,.046,.094);
+        part(0x5d7d79,side*.459,.246,.024,.022);
+        part(0x829b94,side*.459,.197,.018,.014);
+      }
+    }
+    if(item.core)markings(cross,crossCount,(offset,dashed)=>{if(dashed)fixed(0xf1eee0,0,offset,elevation(0)+.081,.022,.006,.34,'flat');});
+    if(edge){
+      for(const offset of [-.375,0,.375])fixed(0x77928c,offset,side*.459,elevation(offset)+.20,.019,.11,.019);
+      fixed(0xe8c987,0,side*.439,elevation(0)+.177,.024,.035,.048);
+      if(item.core&&Math.abs(along)===(alongCount-1)/2){
+        const h=elevation(0),pole=side*.451;
+        fixed(0x52716e,0,pole,h+.48,.027,.66,.027);
+        fixed(0x52716e,0,pole-side*.10,h+.81,.22,.025,.031);
+        fixed(0xffefba,0,pole-side*.18,h+.795,.10,.018,.058);
+      }
+    }
+    if(tile.x===item.x&&tile.y===item.y){
+      const originAlong=ew?b.cx-tile.x:b.cy-tile.y,originCross=ew?b.cy-tile.y:b.cx-tile.x;
+      for(const a of [-1,1]){
+        const offset=originAlong+a*(alongCount/2+.33),h=elevation(offset),top=h-.047;
+        for(const c of [-1,1]){
+          const lateral=originCross+c*(crossCount/2-.56);
+          fixed(0xb5beb3,offset,lateral,.070,.38,.09,.34);
+          fixed(0xa7b6af,offset,lateral,(top+.095)/2,.23,top-.095,.23,'cylinder');
+          fixed(0xd5dcd1,offset,lateral,top-.017,.34,.12,.28);
+        }
+        fixed(0xbac6ba,offset,originCross,top+.012,crossCount-.32,.10,.23);
+      }
+      for(const c of [-1,1])fixed(0xa8b9b1,originAlong,originCross+c*(crossCount/2-.54),INTERCHANGE_HEIGHT-.043,.095,.075,alongCount+.15);
     }
   }
 
@@ -625,13 +696,7 @@ export class CityRenderer {
     // Flat road pieces receive shadows without casting tile-edge seams.
     batch.add('flat', style.sidewalk, x, .036, z, 1.001, .058, 1.001);
     batch.add('flat', style.asphalt, x + (right - left) / 2, .069, z + (bottom - top) / 2, left + right, .014, top + bottom);
-    if (junction) {
-      for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
-        if (!neighbor(dx, dz) || this.junctionCells.has(`${tile.x + dx},${tile.y + dz}`)) continue;
-        for (let i = -3; i <= 3; i++) batch.box(0xece7d2, x + dx * .34 + (dz ? i * .11 : 0), .082, z + dz * .34 + (dx ? i * .11 : 0), dz ? .06 : .11, .009, dx ? .06 : .11);
-      }
-      return;
-    }
+    if (junction) return;
     // Paired roads share a carriageway: four lanes, or six from level five.
     const lanes = boulevardLanes(tile, wide);
     for(const divider of lanes?.dividers || [0]) batch.add('flat', wide.level>=6?0xffffff:0xf1eee0, x + (ew ? 0 : divider), .080, z + (ew ? divider : 0), ew ? .34 : .022, .008, ew ? .022 : .34);
@@ -1286,7 +1351,7 @@ export class CityRenderer {
       if(level>=4)box(0xbda673,0,.11,size*.42,size*.65,.09,.12);
     }else{
       // Distinct rooftop equipment, an upper service floor, then landscaped terrace.
-      const top=(b.type==='hospital'?1.63:b.type==='clinic'?.69:b.type==='school'?.72:.81)*factor;
+      const top=(b.type==='policeStation'?.75:b.type==='hospital'?1.63:b.type==='clinic'?.69:b.type==='school'?.72:.81)*factor;
       const a=b.type==='hospital'?.43:0,d=b.type==='hospital'?-.21:-.08;
       box(0xb6c9bd,a,top+.10,d,.31,.17,.24);
       box(0x577e87,a,top+.20,d,.35,.035,.29);
@@ -1369,7 +1434,7 @@ export class CityRenderer {
   }
   _animateYachts(delta){
     this.yachtClock=(this.yachtClock||0)+delta;
-    for(let i=0;i<(this.yachts||[]).length;i++)updateYachtActor(this.yachts[i],this.yachtEntries[i],this.yachtClock,!!this.roadFocus);
+    for(let i=0;i<(this.yachts||[]).length;i++)updateYachtActor(this.yachts[i],this.yachtEntries[i],this.yachtClock,!!this.roadFocus,this.nightBlend);
   }
 
   _largeUtility(batch,b){
@@ -1728,6 +1793,28 @@ export class CityRenderer {
       for (const a of [-.30, .30]) { box(0x956d48, a, .115, .11, .23, .034, .075); box(0x9f7851, a, .17, .15, .23, .10, .026); }
       this._lamp(batch, x + .4, z + .4);
       this._gardenUpgrades(batch,x,z,b.type,b.level,1);
+    } else if (b.type === 'policeStation') {
+      box(0xd6dce0,0,.05,0,.94,.08,.94);
+      box(0xe9eceb,0,.37,-.06,.78,.62,.64);
+      box(0x315d91,0,.71,-.06,.86,.08,.72);
+      for(const a of [-.25,.25])for(const h of [.25,.49])box(0x517c98,a,h,.268,.14,.14,.018);
+      box(0x315d91,0,.26,.28,.16,.34,.025);
+      box(0x315d91,0,.59,.28,.29,.12,.025);
+      local('cylinder',0xe7ca78,0,.59,.301,.074,.025,.074,0,Math.PI/2);
+      box(0x677886,.30,.86,-.23,.018,.30,.018);
+      box(0x315d91,-.27,.15,.36,.22,.075,.12);
+      box(0xd84c43,-.31,.205,.36,.045,.03,.06);box(0x4e94cc,-.23,.205,.36,.045,.03,.06);
+    } else if (b.type === 'busStop') {
+      box(0xd8d5c5,0,.05,0,.94,.08,.94);
+      box(0x46a58c,0,.51,-.05,.86,.065,.47);
+      for(const a of [-.36,.36])box(0x567770,a,.28,-.18,.025,.45,.025);
+      box(0x99bcc0,0,.29,-.265,.72,.34,.018);
+      for(const a of [-.22,0,.22])box(0x607b75,a,.29,-.25,.018,.36,.025);
+      box(0x9a754e,0,.17,-.10,.60,.045,.12);box(0x9a754e,0,.23,-.16,.60,.12,.025);
+      box(0x567770,.36,.27,.30,.024,.48,.024);
+      box(0x46a58c,.36,.48,.30,.18,.15,.025);
+      box(0xf4e5b9,.36,.48,.318,.12,.055,.010);
+      box(0x315d91,-.30,.32,-.24,.12,.18,.025);
     } else if (b.type === 'school') {
       box(0xd5ccb1,0,.05,0,.95,.08,.95);
       box(0xe7d5a9,-.20,.34,-.12,.43,.56,.62);
@@ -2220,6 +2307,7 @@ export class CityRenderer {
     if(this.layerBuildingHighlightGroup)this.layerBuildingHighlightGroup.visible=!this.roadFocus;
     if(this.signalGroup)this.signalGroup.visible=!this.roadFocus;
     for(const mesh of this.dynamicMeshes||[])mesh.visible=!this.roadFocus;
+    this.vehicleLighting?.setAmount(this.nightBlend,!!this.roadFocus);
     if(this.civicEffects)this.civicEffects.visible=!this.roadFocus;
   }
 
@@ -2310,9 +2398,14 @@ export class CityRenderer {
 
   selectCell(cell) {
     this.selected = cell;
+    if(!cell)this.directionGuide?.set(null,this.state);
     this._buildSelectedCoverage();
     this.selectionRing.visible = !!cell;
     if (cell) this.selectionRing.position.set(wx(cell.x), this._tile(cell.x, cell.y)?.terrain === 'water' ? .14 : 0, wx(cell.y));
+  }
+
+  setDirectionGuide(item){
+    this.directionGuide?.set(item?{...item,axis:interchangeAt(this.state,item)?.axis??null}:null,this.state);
   }
 
   _buildSelectedCoverage(){
@@ -2425,6 +2518,27 @@ export class CityRenderer {
     mesh.userData.ownMaterial = true;
     mesh.computeBoundingSphere();
     this.overlayGroup.add(mesh);
+    if(this.overlay==='traffic'){
+      const pieces=[];
+      for(const t of tiles.filter(t=>t.interchange)){
+        const ew=t.interchange.axis==='ew',slices=t.interchange.core?1:12;
+        for(let i=0;i<slices;i++){
+          const from=-.5+i/slices,to=from+1/slices,offset=(from+to)/2;
+          const h0=roadElevation(this.state,t.x+(ew?from:0),t.y+(ew?0:from),t.interchange.axis),h1=roadElevation(this.state,t.x+(ew?to:0),t.y+(ew?0:to),t.interchange.axis);
+          pieces.push({tile:t,ew,offset,height:(h0+h1)/2,slope:Math.atan2(h1-h0,to-from),length:Math.hypot(to-from,h1-h0)});
+        }
+      }
+      if(pieces.length){
+        const upper=new THREE.InstancedMesh(this.geometries.box,material.clone(),pieces.length);
+        pieces.forEach((p,i)=>{
+          dummy.position.set(wx(p.tile.x)+(p.ew?p.offset:0),p.height+.092,wx(p.tile.y)+(p.ew?0:p.offset));
+          dummy.scale.set(p.ew?p.length:.965,.006,p.ew?.965:p.length);
+          dummy.rotation.set(p.ew?0:-p.slope,0,p.ew?p.slope:0);dummy.updateMatrix();upper.setMatrixAt(i,dummy.matrix);
+          color.setHSL(.35*(1-clamp((p.tile.traffic||0)/100,0,1)),.72,.47);upper.setColorAt(i,color);
+        });
+        upper.instanceMatrix.needsUpdate=true;upper.instanceColor.needsUpdate=true;upper.renderOrder=3;upper.userData={ownMaterial:true,elevatedTraffic:true};upper.computeBoundingSphere();this.overlayGroup.add(upper);
+      }
+    }
   }
 
   _createTraffic() {
@@ -2432,7 +2546,7 @@ export class CityRenderer {
     this.pedestrians = [];
     this.carClock = 0;
     this.carCapacity = 140;
-    this.pedestrianCapacity = 96;
+    this.pedestrianCapacity = PEDESTRIAN_CAPACITY;
     this.actorRaycaster = new THREE.Raycaster();
     this.actorById = new Map();
     this.trafficController = new TrafficController();
@@ -2466,6 +2580,7 @@ export class CityRenderer {
       this.scene.add(mesh);
     }
     this.carDummy = new THREE.Object3D();
+    this.vehicleLighting=new RoadVehicleLighting(this.scene,this.carCapacity);
     this.actorMarkers = Array.from({ length: 3 }, () => {
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'actor-marker'; button.hidden = true;
@@ -2490,6 +2605,7 @@ export class CityRenderer {
   _resetActors() {
     this.cars = []; this.pedestrians = []; this.actorById.clear();
     for (const mesh of this.dynamicMeshes) mesh.count = 0;
+    this.vehicleLighting?.setCount(0);
     this.actorMarkers.forEach(marker => { marker.actorId = null; marker.button.hidden = true; });
     this.routeKey = null; this.pedestrianKey = null;
     this.nextMarkerSelection = 0; this.nextMarkerVisibility = 0;
@@ -2530,6 +2646,9 @@ export class CityRenderer {
     for (let rung = 0; rung < 6; rung++) truck.box(0xd4d6c2, 0, .306, -.233 + rung * .061, .14, .017, .016);
     truck.box(0x364a46, 0, .325, .179, .19, .026, .062);
     truck.finish(this.fireTruck);
+    this.civicRoadLighting=new RoadVehicleLighting(this.fireTruck,1);
+    this.civicRoadLighting.setCount(1);
+    this.civicRoadLighting.update(0,{x:0,y:.16,z:0,length:.58,width:.244});this.civicRoadLighting.finish();
     this.civicBlueMaterial = new THREE.MeshBasicMaterial({ color: 0x5ad1ff, toneMapped: false });
     this.fireTruckLights = [this.signalMaterials.red, this.civicBlueMaterial].map((material, i) => {
       const mesh = new THREE.Mesh(this.geometries.box, material);
@@ -2626,12 +2745,14 @@ export class CityRenderer {
     const fraction = length ? distance - segment : 0;
     const a = path[segment], b = path[Math.min(segment + 1, length)];
     const dx = b.x - a.x, dy = b.y - a.y || (dx === 0 ? 1 : 0);
-    const x = wx(a.x + (b.x - a.x) * fraction) + dy * .16;
-    const z = wx(a.y + (b.y - a.y) * fraction) - dx * .16;
+    const lane=length?vehicleLanePose(path,distance,this.wideRoads):{x:a.x-dy*.16,y:a.y+dx*.16,angle:Math.atan2(dx,dy)};
+    const x = wx(lane.x), z = wx(lane.y);
     const bridgeA = this._tile(a.x, a.y)?.terrain === 'water', bridgeB = this._tile(b.x, b.y)?.terrain === 'water';
-    const elevation = .079 + ((bridgeA ? 1 - fraction : 0) + (bridgeB ? fraction : 0)) * .114;
+    const elevation = .079 + ((bridgeA ? 1 - fraction : 0) + (bridgeB ? fraction : 0)) * .114+roadElevation(this.state,a.x+(b.x-a.x)*fraction,a.y+(b.y-a.y)*fraction,dx?'ew':'ns');
     this.fireTruck.position.set(x, elevation, z);
-    this.fireTruck.rotation.y = Math.atan2(dx, dy);
+    const px=a.x+(b.x-a.x)*fraction,py=a.y+(b.y-a.y)*fraction;
+    const rise=roadElevation(this.state,px+dx*.05,py+dy*.05,dx?'ew':'ns')-roadElevation(this.state,px-dx*.05,py-dy*.05,dx?'ew':'ns');
+    this.fireTruck.rotation.set(-Math.atan2(rise,.1),lane.angle,0,'YXZ');
     if (!this.paused && this.civicFollow?.id === this.civicIncident.id) {
       // Keep the already framed screen position while following the actual
       // appliance. No independent camera clock can run ahead of the drill.
@@ -2690,7 +2811,7 @@ export class CityRenderer {
     const previous = new Map(this.cars.map(car => [car.id, car]));
     for (const car of this.cars) this.actorById.delete(car.id);
     this.cars = [];
-    const valid = routes.filter(route => route.points?.length >= 2 && (route.load ?? 1) > 0);
+    const valid = routes.filter(route => !route.walking && route.points?.length >= 2 && (route.load ?? 1) > 0);
     const population=this.state?.stats?.population||0;
     const civilianKinds=CIVILIAN_VEHICLE_KINDS.filter(kind=>kind==='compact'||kind==='car'||population>=(kind==='hatchback'?500:kind==='suv'||kind==='taxi'?1000:2000));
     const freightKinds=FREIGHT_VEHICLE_KINDS.filter(kind=>kind==='freight'||population>=(kind==='pickup'?500:1000));
@@ -2711,7 +2832,9 @@ export class CityRenderer {
         const variants=kind==='freight'?freightKinds:civilianKinds;
         const appearance=route.vehicleKind||(publicVehicle?route.kind:variants[nameSeed%variants.length]);
         const initialTravel=this.state?.catalogPreview?(points.length-1)/2:((nameSeed % 997) / 997) * (points.length - 1);
-        const car = { id, nameSeed, points, homeId:route.homeId,workplaceId:route.workplaceId,facilityId:route.facilityId,targetId:route.targetId,incidentId:route.incidentId,responding:!!route.responding,kind,appearance, travel: old?.travel ?? initialTravel, reverse: j % 2 === 1, position: old?.position || new THREE.Vector3(), x: points[0].x, y: points[0].y };
+        const returning=j%2===1&&route.returnPoints?.length>=2;
+        const tripPoints=returning?route.returnPoints:points;
+        const car = { id, nameSeed, points:tripPoints, returning, homeId:route.homeId,workplaceId:route.workplaceId,facilityId:route.facilityId,targetId:route.targetId,incidentId:route.incidentId,responding:!!route.responding,kind,appearance, travel: old?.travel ?? initialTravel, reverse: !route.directed&&!route.returnPoints&&j % 2 === 1, position: old?.position || new THREE.Vector3(), x: points[0].x, y: points[0].y };
         this.cars.push(car); this.actorById.set(id, car);
       }
     }
@@ -2719,6 +2842,7 @@ export class CityRenderer {
     this.carCabins.count = this.cars.length;
     this.carWheels.count = this.cars.length * 2;
     this.carLights.count = this.cars.length * 2;
+    this.vehicleLighting?.setCount(this.cars.length);
     this.carEmergencyRed.count=this.cars.length;
     this.carEmergencyBlue.count=this.cars.length;
     this.carServiceMarksA.count=this.cars.length;
@@ -2753,14 +2877,15 @@ export class CityRenderer {
     this.trafficController.step(this.paused ? 0 : delta);
     this._updateTrafficLights();
     const dummy = this.carDummy;
-    const transform = (mesh, i, x, y, z, sx, sy, sz, angle) => {
-      dummy.position.set(x, y, z); dummy.scale.set(sx, sy, sz); dummy.rotation.set(0, angle, 0); dummy.updateMatrix(); mesh.setMatrixAt(i, dummy.matrix);
+    const transform = (mesh, i, x, y, z, sx, sy, sz, angle, pitch=0) => {
+      dummy.position.set(x, y, z); dummy.scale.set(sx, sy, sz); dummy.rotation.set(pitch, angle, 0, 'YXZ'); dummy.updateMatrix(); mesh.setMatrixAt(i, dummy.matrix);
     };
     this.cars.forEach((car, i) => {
       const len = car.points.length - 1;
       const pose = this.trafficController.getPose(car.id);
       car.visible = !!pose && pose.visible !== false;
       if (!car.visible) {
+        this.vehicleLighting?.update(i,{visible:false});
         for (const mesh of [this.carBodies, this.carCabins,this.carEmergencyRed,this.carEmergencyBlue,this.carServiceMarksA,this.carServiceMarksB,this.carDetailsA,this.carDetailsB]) transform(mesh, i, 0, -10, 0, 0, 0, 0, 0);
         for (const mesh of [this.carWheels, this.carLights]) for (let j = 0; j < 2; j++) transform(mesh, i * 2 + j, 0, -10, 0, 0, 0, 0, 0);
         return;
@@ -2772,27 +2897,23 @@ export class CityRenderer {
       const f = distance - segment;
       const a = car.points[segment], b = car.points[segment + 1];
       const dx = pose.dx, dz = pose.dy;
-      const laneOffset=point=>{
-        const layout=this.wideRoads?.get(`${point.x},${point.y}`);
-        const lanes=boulevardLanes(point,layout);
-        if(layout?.level>=5&&lanes&&((layout.axis==='ew'&&dx===lanes.direction)||(layout.axis==='ns'&&dz===lanes.direction))){
-          const center=lanes.centers[1];
-          return layout.axis==='ew'?{x:0,z:center}:{x:center,z:0};
-        }
-        return {x:dz*.16,z:-dx*.16};
-      };
-      const offsetA=laneOffset(a),offsetB=laneOffset(b);
-      const x = wx(pose.x) + offsetA.x*(1-f)+offsetB.x*f;
-      const z = wx(pose.y) + offsetA.z*(1-f)+offsetB.z*f;
+      const lane=pose.lanePose||vehicleLanePose(car.reverse?[...car.points].reverse():car.points,car.travel,this.wideRoads);
+      const x = wx(lane.x), z = wx(lane.y);
       const bridgeA = this._tile(a.x, a.y)?.terrain === 'water', bridgeB = this._tile(b.x, b.y)?.terrain === 'water';
-      const y = .16 + ((bridgeA ? 1 - f : 0) + (bridgeB ? f : 0)) * .114;
-      const angle = Math.atan2(dx, dz);
+      const y = .16 + ((bridgeA ? 1 - f : 0) + (bridgeB ? f : 0)) * .114+roadElevation(this.state,pose.x,pose.y,dx?'ew':'ns');
+      const angle = lane.angle;
+      const rise=roadElevation(this.state,pose.x+dx*.05,pose.y+dz*.05,dx?'ew':'ns')-roadElevation(this.state,pose.x-dx*.05,pose.y-dz*.05,dx?'ew':'ns');
+      const pitch=-Math.atan2(rise,.1),cosPitch=Math.cos(pitch),sinPitch=Math.sin(pitch);
       const vehicleStyle=ROAD_VEHICLE_STYLES[car.appearance]||ROAD_VEHICLE_STYLES[car.kind]||ROAD_VEHICLE_STYLES.car;
       const {length,width,bodyHeight,cabinHeight,cabinLength,shape}=vehicleStyle;
+      this.vehicleLighting?.update(i,{x,y,z,angle,pitch,length,width});
       const cabinOffset=vehicleStyle.cabinOffset||0,axleOffset=vehicleStyle.axleOffset??length*.32;
-      const place=(mesh,index,longitudinal,lateral,height,sx,sy,sz)=>transform(mesh,index,x+Math.sin(angle)*longitudinal+Math.cos(angle)*lateral,y+height,z+Math.cos(angle)*longitudinal-Math.sin(angle)*lateral,sx,sy,sz,angle);
+      const place=(mesh,index,longitudinal,lateral,height,sx,sy,sz)=>{
+        const forward=longitudinal*cosPitch+height*sinPitch,vertical=height*cosPitch-longitudinal*sinPitch;
+        transform(mesh,index,x+Math.sin(angle)*forward+Math.cos(angle)*lateral,y+vertical,z+Math.cos(angle)*forward-Math.sin(angle)*lateral,sx,sy,sz,angle,pitch);
+      };
       const hide=mesh=>transform(mesh,i,0,-10,0,0,0,0,0);
-      transform(this.carBodies, i, x, y, z, width, bodyHeight, length, angle);
+      transform(this.carBodies, i, x, y, z, width, bodyHeight, length, angle,pitch);
       place(this.carCabins,i,cabinOffset,0,bodyHeight*.55,width*.81,cabinHeight,cabinLength);
       for (const [offset, n] of [[-axleOffset, 0], [axleOffset, 1]]) place(this.carWheels,i*2+n,offset,0,-.037,width*1.08,.063,.05);
       for (const [side, n] of [[-width*.31, 0], [width*.31, 1]]) place(this.carLights,i*2+n,length/2+.007,side,.008,.036,.03,.018);
@@ -2828,6 +2949,13 @@ export class CityRenderer {
         place(this.carDetailsA,i,-length*.20,0,bodyHeight*.52,width*.92,.19,length*.52);
         place(this.carDetailsB,i,-length*.48,0,bodyHeight*.18,width*.94,.045,.030);
         sideStripe(this.carServiceMarksA,-1,-length*.20,length*.48);sideStripe(this.carServiceMarksB,1,-length*.20,length*.48);
+      }else if(shape==='police'){
+        sideStripe(this.carServiceMarksA,-1,0,length*.72);sideStripe(this.carServiceMarksB,1,0,length*.72);
+        bumper(this.carDetailsA,1);bumper(this.carDetailsB,-1);
+      }else if(shape==='bus'){
+        sideStripe(this.carServiceMarksA,-1,0,length*.86);sideStripe(this.carServiceMarksB,1,0,length*.86);
+        place(this.carDetailsA,i,length*.44,0,roofY,width*.7,.045,.018);
+        place(this.carDetailsB,i,0,0,roofY+.03,width*.66,.035,length*.44);
       }else if(shape==='ambulance'){
         sideStripe(this.carServiceMarksA,-1,-length*.10,length*.70);sideStripe(this.carServiceMarksB,1,-length*.10,length*.70);
         place(this.carDetailsA,i,-length*.14,0,roofY+.032,.045,.022,.18);
@@ -2837,7 +2965,7 @@ export class CityRenderer {
         place(this.carDetailsA,i,-length*.10,-width*.22,roofY+.035,.025,.028,length*.62);
         place(this.carDetailsB,i,-length*.10,width*.22,roofY+.035,.025,.028,length*.62);
       }
-      if(shape==='ambulance'||shape==='fire-engine'){
+      if(shape==='ambulance'||shape==='fire-engine'||shape==='police'){
         const flash=Math.floor(this.carClock*7)%2;
         for(const [mesh,side,on] of [[this.carEmergencyRed,-.055,flash===0],[this.carEmergencyBlue,.055,flash===1]])place(mesh,i,cabinOffset,side,roofY+.050,on ? .072 : .050,on ? .036 : .023,.060);
       }
@@ -2845,6 +2973,7 @@ export class CityRenderer {
       const cell = f < .5 ? a : b; car.x = cell.x; car.y = cell.y;
     });
     for (const mesh of [this.carBodies, this.carCabins, this.carWheels, this.carLights,this.carEmergencyRed,this.carEmergencyBlue,this.carServiceMarksA,this.carServiceMarksB,this.carDetailsA,this.carDetailsB]) mesh.instanceMatrix.needsUpdate = true;
+    this.vehicleLighting?.finish();
   }
 
   _syncTrafficController() {
@@ -2992,59 +3121,16 @@ export class CityRenderer {
     }
   }
 
-  _setPedestrians() {
+  _setPedestrians(plans=planPedestrians(this.state,this.pedestrianCapacity)) {
     const previous = new Map(this.pedestrians.map(person => [person.id, person]));
     for (const person of this.pedestrians) this.actorById.delete(person.id);
     this.pedestrians = [];
-    const homes = (this.state.buildings || []).filter(b => b.type === 'residential' && b.population > 0 && b.progress >= 1);
-    this.hasResidents = homes.length > 0;
-    // Remaining residents can still walk on a disconnected local street and
-    // explain the actual disconnection. Vehicles still require a real route.
-    const walkableRoad = p => { const tile = this._tile(p.x, p.y); return !!tile?.road; };
-    const nearbyRoads = p => [{ x: p.x - 1, y: p.y }, { x: p.x + 1, y: p.y }, { x: p.x, y: p.y - 1 }, { x: p.x, y: p.y + 1 }].filter(walkableRoad);
-    for (const home of homes) {
-      if (this.pedestrians.length >= this.pedestrianCapacity) continue;
-      const neighbors = [...new Map(buildingCells(home).flatMap(nearbyRoads).map(p=>[`${p.x},${p.y}`,p])).values()];
-      if (!neighbors.length) continue;
-      const count = home.population >= 16 ? 2 : 1;
-      for (let slot = 0; slot < count && this.pedestrians.length < this.pedestrianCapacity; slot++) {
-        const id = `resident-${home.id}-${slot}`;
-        const nameSeed = stableHash(id), origin = neighbors[nameSeed % neighbors.length];
-        const journey=getCitizenStory(this.state,{id,nameSeed,kind:'pedestrian',homeId:home.id,...origin})?.journey;
-        let points = journey?.points||[];
-        if (!points.length) {
-          points = [{ ...origin }];
-          const visits = new Map([[`${origin.x},${origin.y}`, 1]]);
-          for (let step = 0; step < 8; step++) {
-            const current = points.at(-1), before = points.at(-2);
-            const candidates = nearbyRoads(current).filter(p => !before || p.x !== before.x || p.y !== before.y);
-            candidates.sort((a, b) => {
-              const score = p => (visits.get(`${p.x},${p.y}`) || 0) * 20 + rnd(p.x, p.y, nameSeed % 157 + step);
-              return score(a) - score(b);
-            });
-            if (!candidates.length) break;
-            const next = candidates[0]; points.push(next);
-            visits.set(`${next.x},${next.y}`, (visits.get(`${next.x},${next.y}`) || 0) + 1);
-          }
-        }
-        if (!points.length || (points.length===1&&!journey) || points.some((p, i) => i && Math.abs(p.x - points[i - 1].x) + Math.abs(p.y - points[i - 1].y) !== 1)) continue;
-        const side = slot ? -1 : 1;
-        const path = points.map((p, i) => {
-          const previousPoint = points[Math.max(0, i - 1)], nextPoint = points[Math.min(points.length - 1, i + 1)];
-          const input = i ? { x: p.x - previousPoint.x, y: p.y - previousPoint.y } : { x: nextPoint.x - p.x, y: nextPoint.y - p.y };
-          const output = i + 1 < points.length ? { x: nextPoint.x - p.x, y: nextPoint.y - p.y } : input;
-          const normalX = input.y === output.y && input.x === output.x ? input.y : input.y + output.y;
-          const normalZ = input.y === output.y && input.x === output.x ? -input.x : -input.x - output.x;
-          return { x: wx(p.x) + normalX * .412 * side, z: wx(p.y) + normalZ * .412 * side, height: this._tile(p.x, p.y).terrain === 'water' ? .193 : .079 };
-        });
-        if(points.length===1){
-          const p=points[0],edge=place=>{const dx=place.x+((place.size||1)-1)/2-p.x,dy=place.y+((place.size||1)-1)/2-p.y,n=Math.max(1,Math.abs(dx),Math.abs(dy));return {x:wx(p.x)+dx/n*.412,z:wx(p.y)+dy/n*.412,height:path[0].height};};
-          path.splice(0,1,edge(journey.from),edge(journey.to));
-        }
-        const old = previous.get(id), len = path.length - 1;
-        const person = { id, nameSeed, homeId:home.id,kind: 'pedestrian', points, path, travel: (old?.travel ?? (nameSeed % 991) / 991 * len * 2) % (len * 2), position: old?.position || new THREE.Vector3(), x: origin.x, y: origin.y };
-        this.pedestrians.push(person); this.actorById.set(id, person);
-      }
+    this.hasResidents=plans.hasResidents;
+    for(const plan of plans.people){
+      const old=previous.get(plan.id),len=plan.lengths.at(-1);
+      const person={...plan,travel:(old?.signature===plan.signature?old.travel:(plan.nameSeed%991)/991*len*2)%(len*2),
+        position:old?.position||new THREE.Vector3()};
+      this.pedestrians.push(person);this.actorById.set(person.id,person);
     }
     this.walkerBodies.count = this.walkerHeads.count = this.walkerHair.count = this.pedestrians.length;
     this.walkerArms.count = this.walkerLegs.count = this.pedestrians.length * 2;
@@ -3072,15 +3158,20 @@ export class CityRenderer {
       dummy.position.set(x, y, z); dummy.scale.set(sx, sy, sz); dummy.rotation.set(swing, angle, 0, 'YXZ'); dummy.updateMatrix(); mesh.setMatrixAt(i, dummy.matrix);
     };
     this.pedestrians.forEach((person, i) => {
-      const len = person.path.length - 1;
+      const lengths=person.lengths||person.path.map((_,i)=>i),len=lengths.at(-1);
       if (!this.paused) person.travel += delta * (.22 + (person.nameSeed % 5) * .013);
       const phase = person.travel % (len * 2), reverse = phase > len;
       person.returning=reverse;
       const distance = reverse ? len * 2 - phase : phase;
-      const segment = Math.min(len - 1, Math.floor(distance)), fraction = distance - segment;
+      let segment=0;while(segment+1<lengths.length-1&&lengths[segment+1]<distance)segment++;
+      const fraction=(distance-lengths[segment])/(lengths[segment+1]-lengths[segment]);
       const a = person.path[segment], b = person.path[segment + 1];
       const x = a.x + (b.x - a.x) * fraction, z = a.z + (b.z - a.z) * fraction;
-      const floor = a.height + (b.height - a.height) * fraction;
+      const pa=a.cell||person.points[Math.min(segment,person.points.length-1)],pb=b.cell||person.points[Math.min(segment+1,person.points.length-1)];
+      const axis=a.axis||b.axis||(pa.x!==pb.x?'ew':'ns');
+      const ax=a.x+HALF-.5,ay=a.z+HALF-.5,bx=b.x+HALF-.5,by=b.z+HALF-.5;
+      const upperA=roadElevation(this.state,ax,ay,axis),upperB=roadElevation(this.state,bx,by,axis);
+      const floor=a.height+(b.height-a.height)*fraction-upperA*(1-fraction)-upperB*fraction+roadElevation(this.state,ax+(bx-ax)*fraction,ay+(by-ay)*fraction,axis);
       const angle = Math.atan2((b.x - a.x) * (reverse ? -1 : 1), (b.z - a.z) * (reverse ? -1 : 1));
       const swing = Math.sin(person.travel * 20 + person.nameSeed % 5) * .33;
       const bob = Math.abs(Math.sin(person.travel * 20)) * .007;
@@ -3093,14 +3184,14 @@ export class CityRenderer {
         transform(this.walkerLegs, i * 2 + j, x + Math.cos(angle) * side * .028, floor + .085, z - Math.sin(angle) * side * .028, .037, .135, .043, angle, -swing * side);
       }
       person.position.set(x, floor + .25, z);
-      const cell = person.points[Math.min(person.points.length-1,fraction < .5 ? segment : segment + 1)]; person.x = cell.x; person.y = cell.y;
+      const cell=fraction<.5?pa:pb;person.x=cell.x;person.y=cell.y;
     });
     for (const mesh of [this.walkerBodies, this.walkerHeads, this.walkerHair, this.walkerArms, this.walkerLegs]) mesh.instanceMatrix.needsUpdate = true;
   }
 
   _actorDescriptor(actor) {
     if(actor.kind==='yacht')return {id:actor.id,kind:'yacht',yachtId:actor.yachtId,x:actor.x,y:actor.y,status:actor.status};
-    return { id: actor.id, kind: actor.kind, x: actor.x, y: actor.y, homeId:actor.homeId,workplaceId:actor.workplaceId,returning:actor.kind==='pedestrian'?!!actor.returning:!!actor.reverse,origin: { ...actor.points[0] }, destination: { ...actor.points.at(-1) }, routeLength: actor.points.length - 1, nameSeed: actor.nameSeed, waiting: !!actor.waiting, waitReason: actor.waitReason || null };
+    return { id: actor.id, kind: actor.kind, x: actor.x, y: actor.y, homeId:actor.homeId,workplaceId:actor.workplaceId,returning:actor.kind==='pedestrian'?!!actor.returning:!!actor.returning||!!actor.reverse,origin: { ...actor.points[0] }, destination: { ...actor.points.at(-1) }, routeLength: actor.points.length - 1, nameSeed: actor.nameSeed, waiting: !!actor.waiting, waitReason: actor.waitReason || null };
   }
 
   getActorDescriptor(id){const actor=this.actorById.get(id);return actor?this._actorDescriptor(actor):null;}
@@ -3494,10 +3585,24 @@ export class CityRenderer {
     this.canvas.style.cursor = this.catalogMode ? 'ew-resize' : this.tool === 'inspect' ? 'grab' : 'crosshair';
   }
 
-  _limitCamera() { const edge=mapSize(this.state)-HALF+1;this.target.x = clamp(this.target.x, -33, edge); this.target.z = clamp(this.target.z, -33, edge); }
+  _limitCamera() {
+    if(this.interchangeFrame){const b=interchangeBounds(this.interchangeFrame);this.target.set(wx(b.cx),this.interchangeFrameElevation,wx(b.cy));return;}
+    const edge=mapSize(this.state)-HALF+1;this.target.x = clamp(this.target.x, -33, edge); this.target.z = clamp(this.target.z, -33, edge);
+  }
   focusCell(x, y) { this.civicFollow = null; this.target.set(wx(x), 0, wx(y)); this._limitCamera(); this._updateCamera(); }
+  frameInterchange(item){
+    this.interchangeFrame={...item};this.civicFollow=null;
+    const b=interchangeBounds(item),height=interchangeAt(this.state,item)?INTERCHANGE_HEIGHT+.3:.2;
+    this.interchangeFrameElevation=height/2;
+    // Include approaches in all four directions, so before/after views share
+    // the same footprint. Fit its actual projection on narrow and wide panels.
+    const dx=b.width+6,dz=b.height+6,sin=Math.abs(Math.sin(this.azimuth)),cos=Math.abs(Math.cos(this.azimuth));
+    const width=dx*cos+dz*sin,vertical=(dx*sin+dz*cos+height)/Math.SQRT2;
+    this.viewSize=Math.max(8,width/Math.max(.1,this.aspect)/.84,vertical/.84);
+    this._limitCamera();this._updateCamera();
+  }
   zoomBy(factor) { this.civicFollow = null; this.viewSize = clamp(this.viewSize * factor, this.catalogMode?1.05:8, 65); this._updateCamera(); }
-  rotateBy(angle) { this.civicFollow = null; this.azimuth = (this.azimuth + angle) % (Math.PI * 2); this._updateCamera(); }
+  rotateBy(angle) { this.civicFollow = null; this.azimuth = (this.azimuth + angle) % (Math.PI * 2);if(this.interchangeFrame)this.frameInterchange(this.interchangeFrame);else this._updateCamera(); }
   rotate(direction = 1) { this.rotateBy(Math.PI / 12 * direction); }
   setCatalogMode(enabled=true){
     this.catalogMode=!!enabled;
@@ -3529,6 +3634,8 @@ export class CityRenderer {
     this.sun.color.set(0xffedd0).lerp(new THREE.Color(0x92b9ec),n);
     this.sun.intensity=3.05*(1-n)+.38*n;
     this.nightLighting.setAmount(n,this.lightingClock);
+    this.vehicleLighting?.setAmount(n,!!this.roadFocus);
+    this.civicRoadLighting?.setAmount(n);
     if(this.waterMaterial?.uniforms.night)this.waterMaterial.uniforms.night.value=n;
   }
   setPaused(value) { this.paused = !!value; }
@@ -3555,6 +3662,7 @@ export class CityRenderer {
     if(this.streetCelebration&&!this.streetCelebration.update(this.paused?0:delta,this.state))this.clearStreetCelebration();
     this._updateActorMarkers();
     this._updateUpgradeMarkers();
+    this.directionGuide?.update(this.camera,this.canvas.getBoundingClientRect(),this.container.getBoundingClientRect());
     if(this.residentRoute.journey)this.residentRoute.update(this.camera,this.canvas.getBoundingClientRect(),this.container.getBoundingClientRect(),this.tool==='inspect'&&!document.querySelector('dialog[open]'));
     if(this.onboardingOverlay.hint)this.onboardingOverlay.update(this.camera,this.canvas.getBoundingClientRect(),this.container.getBoundingClientRect(),this.elapsed,!document.querySelector('dialog[open]')&&!this.residentRoute.journey);
     this.selectionRing.material.opacity = .76 + Math.sin(this.elapsed * 3) * .20;
@@ -3573,8 +3681,10 @@ export class CityRenderer {
   dispose() {
     this.disposed = true;
     this.nightLighting?.dispose();
+    this.vehicleLighting?.dispose();this.civicRoadLighting?.dispose();
     this.residentRoute?.dispose();
     this.onboardingOverlay?.dispose();
+    this.directionGuide?.dispose();
     this.clearMoveGhost();
     this.clearStreetCelebration();
     for(const marker of this.upgradeMarkers?.values()||[])marker.button.remove();

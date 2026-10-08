@@ -7,6 +7,7 @@ import {buildingCells} from '../src/building-footprint.js';
 test('all public community facilities upgrade through four levels with real service, cost, maintenance and save changes',()=>{
  for(const [type,base] of Object.entries(COMMUNITY_BUILDINGS).filter(([type,base])=>!base.fixedFacility&&type!=='marina')){
   const s=new CitySimulation();s.state.money=1000000;s.build('power',[{x:1,y:31}]);s.build('water',[{x:2,y:31}]);for(const utility of s.state.buildings)utility.level=6;s.recalculate();if(type==='districtOffice')assert(s.build('cityHall',[{x:6,y:30}]).ok);s.state.stats.population=50000;
+  if(type==='policeStation')for(let x=7;x<=30;x++){s.tile(x,32).road=1;s.tile(x,32).bridge=s.tile(x,32).terrain==='water';}
   assert(s.build(type,[{x:3,y:32-(base.footprint||1)}]).ok);
   let b=s.state.buildings.find(b=>b.type===type);const cells=buildingCells(b);
   Object.assign(s.state.milestones,{density:true,completed:true,metropolis:true,capital:true});

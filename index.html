@@ -110,7 +110,7 @@
       <p class="inspector-subtitle" id="inspector-subtitle">每一条路，都连接一种可能。</p>
       <div id="inspector-upgrade" aria-label="快捷升级" hidden></div>
       <div id="inspector-content"></div>
-      <section id="signal-inspector" class="signal-inspector" aria-label="路口信号" hidden></section>
+      <section id="signal-inspector" class="signal-inspector" aria-label="路口信号与立交设计" hidden><div id="signal-status" hidden></div><section id="interchange-inspector" class="interchange-inspector" aria-label="路口立交设计" hidden></section></section>
       <div id="city-alerts" class="alerts"></div>
     </aside>
 
@@ -252,7 +252,7 @@
   <dialog id="help-dialog">
     <div class="dialog-heading"><div><span class="eyebrow">MAYOR’S FIELD GUIDE</span><h2>从第一条街道开始</h2></div><button class="plain-icon" data-close-dialog aria-label="关闭手册"><span data-icon="close"></span></button></div>
     <button id="onboarding-open" class="primary-button">打开分步建城引导</button><p class="muted">按这座城市的实际进度继续，可随时跳过。光框只推荐位置，不会替你建设。</p>
-    <ol class="help-steps"><li><b>路要连向城外。</b>从入口延伸道路，住宅和生产、市政服务设施必须临路；公园、广场可直接放在空地。孤立街区不会发展。</li><li><b>给城市接上水电。</b>在路边建设供电站和水塔，查看容量是否足够。</li><li><b>让住、工、商形成循环。</b>拖拽划出住宅，再补充岗位和商店。房屋会按需求自动生长。</li><li><b>问题到地图里找。</b>点击不发展的建筑看原因。交通、供水和污染图层帮助定位。</li><li><b>给另一岸一个机会。</b>选择桥梁并指向河面或岸边；两岸有陆地落点、无建筑阻挡且资金足够，即可花费 ¥3,500 建造整座桥。建好后接上道路。</li><li><b>给路口一点秩序。</b>三岔、十字路口会自动设置信号灯。点击“路口观察”看车辆排队与放行；暂停或加速时，车和灯会一起变化。</li><li><b>听听街头的声音。</b>在查看模式点击行人、车辆或聊天气泡；也可用左侧的街头见闻认识市民，处理抱怨或支持社区活动。</li></ol>
+    <ol class="help-steps"><li><b>路要连向城外。</b>从入口延伸道路，也可将道路接到四周陆地边缘，增设对外入口、分担货运。住宅和生产、市政服务设施必须临路；公园、广场可直接放在空地。孤立街区不会发展。</li><li><b>给城市接上水电。</b>在路边建设供电站和水塔，查看容量是否足够。</li><li><b>让住、工、商形成循环。</b>拖拽划出住宅，再补充岗位和商店。房屋会按需求自动生长。</li><li><b>问题到地图里找。</b>点击不发展的建筑看原因。交通、供水和污染图层帮助定位。</li><li><b>给另一岸一个机会。</b>选择桥梁并指向河面或岸边；两岸有陆地落点、无建筑阻挡且资金足够，即可花费 ¥3,500 建造整座桥。建好后接上道路。</li><li><b>给路口一点秩序。</b>三岔、十字路口会自动设置信号灯。点击“路口观察”看车辆排队与放行；暂停或加速时，车和灯会一起变化。</li><li><b>听听街头的声音。</b>在查看模式点击行人、车辆或聊天气泡；也可用左侧的街头见闻认识市民，处理抱怨或支持社区活动。</li></ol>
     <p class="muted"><b>建立公共服务。</b>道路等级只随人口开放；市政府正常办公后开放市政方针和附近住宅覆盖，还负责消防预算与每月一次的安全演练。消防站需要道路和水电，沿道路覆盖居民。打开左侧“城市政务”可调整方针、查看覆盖和出动记录。</p>
     <div class="keyboard-guide"><span><kbd>1–8</kbd> 常用建设工具</span><span><kbd>M</kbd> 移动建筑或道路</span><span><kbd>P</kbd> 暂停 / 继续</span><span><kbd>Q E</kbd> 旋转 15°</span><span><kbd>右键拖动</kbd> 自由旋转（或 Alt + 左键）</span><span><kbd>Esc</kbd> 取消施工</span><span><kbd>方向键</kbd> 移动施工光标</span><span><kbd>Enter</kbd> 在光标处施工</span></div>
     <details><summary>精确定位与键盘施工</summary><p class="muted">施工光标默认在入口旁 (8, 32)。选择工具后，用坐标定位或方向键移动，按 Enter 放置。范围工具可用鼠标拖拽。升级工具从道路上按住左键拖动，可整段升级；M 选择建筑或单格道路后，再点击空地搬迁，Esc 取消。公园和广场无需道路水电即可影响周边。</p><div class="coordinate-form"><label>X<input id="target-x" type="number" min="0" max="63" value="8"></label><label>Y<input id="target-y" type="number" min="0" max="63" value="32"></label><button class="secondary-button" id="locate-cell">定位并关闭</button></div></details>
@@ -274,6 +274,16 @@
       <p id="identity-error" role="alert" hidden></p>
       <div class="dialog-footer"><button class="secondary-button" type="button" data-close-dialog>取消</button><button id="identity-save" class="primary-button" type="submit">保存城市档案 <span data-icon="check"></span></button></div>
     </form>
+  </dialog>
+  <dialog id="interchange-preview-dialog" class="interchange-preview-dialog" aria-labelledby="interchange-preview-title">
+    <div class="interchange-preview-heading"><div><span class="eyebrow">立交模拟 · 确认后施工</span><h2 id="interchange-preview-title"></h2></div><button class="plain-icon" aria-label="关闭立交预览" data-close-dialog>×</button></div>
+    <p id="interchange-preview-summary"></p>
+    <div class="interchange-preview-controls" role="group" aria-label="预览视角">
+      <button id="interchange-preview-before" class="secondary-button" aria-pressed="false">原路口</button><button id="interchange-preview-after" class="secondary-button" aria-pressed="true">改造预览</button><button id="interchange-preview-traffic" class="secondary-button" aria-pressed="false">交通图层</button><button id="interchange-preview-rotate" class="secondary-button">旋转视角</button><button id="interchange-preview-center" class="secondary-button">居中路口</button>
+    </div>
+    <div id="interchange-preview-world" class="interchange-preview-world" aria-label="立交桥三维模拟"></div>
+    <p id="interchange-preview-impact"></p><p id="interchange-preview-error" role="alert" hidden></p>
+    <div class="dialog-footer"><button class="secondary-button" data-close-dialog>取消，不施工</button><button class="primary-button" id="interchange-preview-confirm">确认建造</button></div>
   </dialog>
   <dialog id="confirm-dialog"><h2 id="confirm-title">确认切换城市？</h2><p id="confirm-description"></p><div class="dialog-footer"><button class="secondary-button" id="confirm-cancel">取消</button><button class="primary-button" id="confirm-ok">继续</button></div></dialog>
   <dialog id="milestone-dialog" aria-labelledby="milestone-title" aria-describedby="milestone-description"></dialog>

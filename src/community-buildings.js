@@ -1,6 +1,8 @@
 import {RELIGIOUS_BUILDINGS} from './religious-buildings.js';
 export const COMMUNITY_BUILDINGS = {
   ...RELIGIOUS_BUILDINGS,
+  policeStation:{name:'警察局',footprint:1,cost:3000,maintenance:150,radius:14,bonus:3,height:.95,icon:'cityHall',roadService:true,description:'沿连通道路提供治安覆盖，降低抢劫风险与事件影响；派出蓝白警车巡逻或响应抢劫，可升六级'},
+  busStop:{name:'公交站',footprint:1,fixedFacility:true,cost:800,maintenance:60,radius:4,bonus:2,height:.55,icon:'road',description:'至少两座公交站接通同一道路网络和水电后自动开通往返公交；两端各 4 格内的住宅与岗位通勤车流减少 40%，通勤时间减少 15%'},
   marina:{name:'游艇码头',footprint:2,category:'entertainment',business:'commercial',jobs:40,service:'entertainment',cost:6500,maintenance:180,radius:9,bonus:4,beauty:10,height:.8,icon:'boat',populationUpgrades:[1000,5000,10000,20000,50000],berths:[2,3,4,5,6,8],description:'2×2 岸边游艇商业；随城市人口升级，逐步扩建会所与 2–8 个泊位，增加岗位、商业税、娱乐服务和社区美观'},
   districtOffice:{name:"区政务中心",footprint:1,minPopulation:5000,category:"utilities",service:"cityHall",cost:2600,maintenance:70,radius:6,bonus:1,height:1.05,icon:"cityHall",description:"1×1 片区办事服务站，可重复建设；在市政府正常办公时扩展市政方针与住宅服务覆盖，不负责城市晋级、预算和消防调度"},
   grandStadium:{fixedFacility:true,name:'都会大体育场',footprint:3,minPopulation:40000,service:'sportsHall',cost:42000,maintenance:1100,radius:18,bonus:6,height:1.6,icon:'park',description:'4 万人口解锁的 3×3 环形看台、顶棚与比赛场地，服务大型城市'},
@@ -24,6 +26,7 @@ export const COMMUNITY_UPGRADES = {
   grandStadium:['都会大体育场','都会体育中心','区域赛事中心','国际赛事中心'],
   grandGallery:['都会大美术馆','综合艺术中心','区域艺术中心','国际艺术中心'],
   shoppingComplex:['都会商业综合体','都会商贸城','区域商贸中心','国际商贸中心'],
+  policeStation:['警察局','街区警务中心','综合警务中心','区域公安中心'],
   clinic:['社区诊所','街区卫生中心','综合门诊中心','区域医疗中心'],
   hospital:['城市综合医院','区域综合医院','三级医疗中心','城市医学中心'],
   school:['社区学校','综合学校','示范学校','城市教育中心'],

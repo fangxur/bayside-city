@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import {roadElevation,interchangeBounds} from './interchanges.js';
 import {gridIndex,inGrid} from './grid.js';
 import {matchesBuildingFilter} from './building-filter.js';
 import {footprintSize} from './building-footprint.js';
@@ -103,6 +104,16 @@ export class NightLighting {
   }
   for(const t of state.tiles)if(t.road){
    const x=t.x-31.5,z=t.y-31.5,y=t.bridge?.25:.10;
+   if(t.interchange){
+    const axis=t.interchange.axis,ew=axis==='ew';
+    if(t.interchange.core)pools.push([x,.10,z,1.7,1.7]);
+    const b=interchangeBounds(t.interchange),along=Math.abs(ew?t.x-b.cx:t.y-b.cy),cross=ew?t.y-b.cy:t.x-b.cx;
+    if(Math.abs(cross)===((ew?b.height:b.width)-1)/2&&along===((ew?b.width:b.height)-1)/2){
+     const inset=-Math.sign(cross)*.38;
+     pools.push([x+(ew?0:inset),roadElevation(state,t.x,t.y,axis)+.102,z+(ew?inset:0),ew?1:1.6,ew?1.6:1]);
+    }
+    continue; // The model already carries its own elevated lamp posts.
+   }
    pools.push([x,y,z,1.7,1.7]);
    if((t.x+t.y)%3===0){
     const east=inGrid(state,t.x+1,t.y)&&state.tiles[gridIndex(state,t.x+1,t.y)]?.road,side=east?0:.40;

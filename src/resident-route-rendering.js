@@ -15,7 +15,8 @@ export class ResidentRouteOverlay {
     this.labels.forEach(e=>e.hidden=true);this.journey=null;this.key=null;
   }
   setJourney(journey,state){
-    const key=journey&&JSON.stringify([journey.from,journey.to,journey.points.map(p=>[p.x,p.y,state.tiles[gridIndex(state,p.x,p.y)]?.bridge,(state.tiles[gridIndex(state,p.x,p.y)]?.traffic||0)>=75])]);
+    const waypoints=journey?.sidewalk||journey?.points;
+    const key=journey&&JSON.stringify([journey.from,journey.to,waypoints.map(p=>{const cell=p.cell||p;return [p.x,p.y,p.height,state.tiles[gridIndex(state,cell.x,cell.y)]?.bridge,(state.tiles[gridIndex(state,cell.x,cell.y)]?.traffic||0)>=75];})]);
     if(key===this.key)return;
     this.clear();if(!journey)return;this.key=key;this.journey=journey;
     const positions=[],colors=[],white=new THREE.Color(0xfff9e7),green=new THREE.Color(0x319f89),orange=new THREE.Color(0xe28e45);
@@ -26,7 +27,7 @@ export class ResidentRouteOverlay {
       triangle(a.clone().add(side),a.clone().sub(side),b.clone().add(side),color);
       triangle(b.clone().add(side),a.clone().sub(side),b.clone().sub(side),color);
     };
-    const points=journey.points.map(p=>world(p).setY(routeHeight(state,p)));
+    const points=waypoints.map(p=>world(p).setY(Math.max(routeHeight(state,p.cell||p),(p.height||0)+.051)));
     // Short dotted connectors join the real roadside entrances to their buildings.
     this.endpoints=[center(journey.from).setY(points[0].y),center(journey.to).setY(points.at(-1).y)];
     for(const [a,b] of [[this.endpoints[0],points[0]],[points.at(-1),this.endpoints[1]]]){
@@ -34,7 +35,7 @@ export class ResidentRouteOverlay {
       for(let i=0;i<steps;i+=2)strip(a.clone().lerp(b,i/steps),a.clone().lerp(b,Math.min(1,(i+1)/steps)),.1,green);
     }
     for(let i=1;i<points.length;i++){
-      const a=points[i-1],b=points[i],p=journey.points[i];
+      const a=points[i-1],b=points[i],p=waypoints[i].cell||waypoints[i];
       const color=(state.tiles[gridIndex(state,p.x,p.y)]?.traffic||0)>=75?orange:green;
       strip(a,b,.25,white);strip(a.clone().add(new THREE.Vector3(0,.003,0)),b.clone().add(new THREE.Vector3(0,.003,0)),.15,color);
       if(i%3===1){

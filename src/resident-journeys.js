@@ -1,9 +1,11 @@
+import {groundRoadAccess} from './interchanges.js';
+import {pedestrianTrip,pedestrianStroll} from './pedestrian-routing.js';
 import {buildingCells,footprintSize} from './building-footprint.js';
 import {businessKind} from './business-kinds.js';
 import {COMMUNITY_BUILDINGS} from './community-buildings.js';
 import {requiresRoad} from './building-access.js';
 import {festivalForMonth} from './festivals.js';
-import {gridIndex,gridPoint,inGrid} from './grid.js';
+import {gridIndex,inGrid} from './grid.js';
 
 export const residentHash=text=>{
   let n=2166136261;for(const char of String(text))n=Math.imul(n^char.charCodeAt(0),16777619);return n>>>0;
@@ -14,25 +16,17 @@ const index=(state,p)=>gridIndex(state,p.x,p.y);
 const tile=(state,p)=>state.tiles[index(state,p)];
 const road=(state,p)=>inGrid(state,p?.x,p?.y)&&!!tile(state,p)?.road;
 const neighbors=p=>[{x:p.x-1,y:p.y},{x:p.x+1,y:p.y},{x:p.x,y:p.y-1},{x:p.x,y:p.y+1}];
-const entrances=(state,b)=>[...new Map(buildingCells(b).flatMap(neighbors).filter(p=>road(state,p)).map(p=>[index(state,p),p])).values()];
+const entrances=(state,b)=>[...new Map(buildingCells(b).flatMap(neighbors).filter(p=>road(state,p)&&groundRoadAccess(tile(state,p))).map(p=>[index(state,p),p])).values()];
 const ready=b=>b.active&&b.progress>=1&&(b.connected||!requiresRoad(b.type))&&b.powered&&b.watered;
 const venueReady=b=>['park','plaza'].includes(b.type)?b.active&&b.progress>=1:ready(b);
 const near=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y)<=12;
 
-// Leisure trips use the existing road network too, including bridge sidewalks.
+// Preserve road-cell routes for stories and overlays, alongside precise curb
+// waypoints. Opposite curbs connect only at a marked pedestrian crossing.
 export function walkingPath(state,from,to){
-  const starts=entrances(state,from),goals=new Set(entrances(state,to).map(p=>index(state,p)));
-  if(!starts.length||!goals.size)return [];
-  const queue=[...starts],previous=new Map(starts.map(p=>[index(state,p),null]));
-  for(let i=0;i<queue.length;i++){
-    const p=queue[i],key=index(state,p);
-    if(goals.has(key)){
-      const path=[];for(let k=key;k!==null;k=previous.get(k))path.push(gridPoint(state,k));
-      return path.reverse();
-    }
-    for(const next of neighbors(p)){const k=index(state,next);if(road(state,next)&&!previous.has(k)){previous.set(k,key);queue.push(next);}}
-  }
-  return [];
+  const trip=pedestrianTrip(state,from,to),points=trip?.points||[];
+  if(trip)Object.defineProperty(points,'sidewalk',{value:trip.sidewalk});
+  return points;
 }
 
 function journey(state,home,destination,points,purpose,label,extra={}){
@@ -40,13 +34,13 @@ function journey(state,home,destination,points,purpose,label,extra={}){
   const congestion=points.filter(p=>(tile(state,p)?.traffic||0)>=75).length;
   return {purpose,label,from:place(home),to:place(destination),points:points.map(p=>({...p})),
     minutes:Math.round(points.reduce((sum,p)=>sum+.65*(1+(tile(state,p)?.traffic||0)/100),1)*10)/10,
-    roadCells:points.length,congestion,...extra};
+    roadCells:points.length,congestion,...(points.sidewalk?{sidewalk:points.sidewalk.map(p=>({...p,cell:{...p.cell}}))}:{}),...extra};
 }
 
-export function residentCommute(state,home,seed,workplaceId){
+export function residentCommute(state,home,seed,workplaceId,{vehicle=false}={}){
   if(!home||!ready(home)||home.workers<=0)return null;
   const starts=new Set(entrances(state,home).map(p=>index(state,p)));
-  const options=(state.routes||[]).filter(r=>r.kind==='commute'&&r.homeId===home.id&&r.load>0&&(!workplaceId||r.workplaceId===workplaceId)).filter(r=>{
+  const options=(state.routes||[]).filter(r=>r.kind==='commute'&&(!vehicle||!r.walking)&&r.homeId===home.id&&r.load>0&&(!workplaceId||r.workplaceId===workplaceId)).filter(r=>{
     const firm=state.buildings.find(b=>b.id===r.workplaceId);
     return firm&&ready(firm)&&firm.jobs>0&&r.points?.length&&Number.isFinite(r.duration)&&starts.has(index(state,r.points[0]))&&
       entrances(state,firm).some(p=>index(state,p)===index(state,r.points.at(-1)))&&r.points.every((p,i)=>road(state,p)&&(!i||Math.abs(p.x-r.points[i-1].x)+Math.abs(p.y-r.points[i-1].y)===1));
@@ -54,23 +48,17 @@ export function residentCommute(state,home,seed,workplaceId){
   let choice=(seed>>>0)%options.reduce((sum,r)=>sum+r.load,0);
   const route=options.find(r=>(choice-=r.load)<0);if(!route)return null;
   const firm=state.buildings.find(b=>b.id===route.workplaceId);
-  return journey(state,home,firm,route.points,'work','去上班',{minutes:route.duration});
+  const points=vehicle?route.points:walkingPath(state,home,firm);
+  return journey(state,home,firm,points,'work','去上班',vehicle?{minutes:route.duration,returnPoints:route.returnPoints}:{});
 }
 
 function stroll(state,home,seed){
-  const starts=entrances(state,home);if(!starts.length)return null;
-  const points=[starts[seed%starts.length]],seen=new Set(points.map(p=>index(state,p)));
-  for(let i=0;i<8;i++){
-    const choices=neighbors(points.at(-1)).filter(p=>road(state,p)&&!seen.has(index(state,p)));
-    if(!choices.length)break;
-    const next=choices[(seed+i)%choices.length];points.push(next);seen.add(index(state,next));
-  }
-  if(points.length<2)return null;
-  return journey(state,home,{...points.at(-1),type:'street'},points,'walk','街区散步');
+  const trip=pedestrianStroll(state,home,seed);if(!trip)return null;
+  return journey(state,home,{...trip.points.at(-1),type:'street'},trip.points,'walk','街区散步',{sidewalk:trip.sidewalk});
 }
 
 export function residentJourney(state,home,seed,social,{returning=false,workplaceId,commuter=false}={}){
-  const commute=residentCommute(state,home,seed,workplaceId);
+  const commute=residentCommute(state,home,seed,workplaceId,{vehicle:commuter});
   let trip=commuter?commute:null;
   if(!commuter){
     const rotation=residentHash(`${seed}:${state.month}:outing`),mode=rotation%4;
@@ -102,5 +90,5 @@ export function residentJourney(state,home,seed,social,{returning=false,workplac
     trip??=stroll(state,home,rotation);
   }
   if(!trip)return null;
-  return returning?{...trip,purpose:'home',label:'回家',outingPurpose:trip.purpose,from:trip.to,to:trip.from,points:[...trip.points].reverse()}:trip;
+  return returning?{...trip,purpose:'home',label:'回家',outingPurpose:trip.purpose,from:trip.to,to:trip.from,points:trip.returnPoints?.length?trip.returnPoints.map(p=>({...p})):[...trip.points].reverse(),...(trip.sidewalk?{sidewalk:[...trip.sidewalk].reverse()}: {})}:trip;
 }

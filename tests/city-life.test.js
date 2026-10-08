@@ -9,7 +9,7 @@ const pedestrian = sim => {
   return { id: `ped-${home.id}`, kind: 'pedestrian', x: home.x, y: home.y, nameSeed: home.id * 7 };
 };
 const car = sim => {
-  const route = sim.state.routes.find(r => r.kind === 'commute' && r.points.length > 3);
+  const route = sim.state.routes.find(r => r.kind === 'commute' && !r.walking && r.points.length > 3);
   return { id: 'car-route-1', kind: 'car', ...route.points[0], origin: { ...route.points[0] }, destination: { ...route.points.at(-1) }, routeLength: route.points.length, nameSeed: 123 };
 };
 
@@ -23,6 +23,7 @@ test('neighborhood stories link a working shop and an occupied neighboring home,
   const shop=sim._newBuilding(land.x,land.y,'commercial',true);
   shop.businessKind=kind;sim.tile(shop.x,shop.y).businessKind=kind;
   sim.recalculate();
+  home.commute=0; // This fixture isolates social dialogue from the commute complaint.
   const before=JSON.stringify(sim.state),story=getCitizenStory(sim.state,actor);
   assert(story.social,kind);assert.equal(story.social.venue.id,shop.id);
   const neighbor=sim.state.buildings.find(b=>b.id===story.social.neighbor.home.id);

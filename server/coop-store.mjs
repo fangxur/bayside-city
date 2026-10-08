@@ -1,3 +1,4 @@
+import {interchangeAt,interchangeCells} from '../src/interchanges.js';
 import {gzipSync,gunzipSync} from 'node:zlib';
 import {DatabaseSync,backup} from 'node:sqlite';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
@@ -19,7 +20,7 @@ const integer=n=>Number.isSafeInteger(n)&&n>=0;
 const token=()=>randomBytes(24).toString('base64url');
 export function hydrate(state){const sim=Object.create(CitySimulation.prototype);sim.state=structuredClone(state);sim._undo=null;return sim;}
 function geometry(b){return b?[b.id,b.x,b.y,b.type,b.businessKind||null,b.footprint||1,b.level,b.rotation||0,b.active,b.progress>=1]:null;}
-function cellShape(s,p){const t=s.tiles[gridIndex(s,p.x,p.y)];return [p.x,p.y,t.terrain,t.road,t.bridge||false,t.zone,t.businessKind||null,t.buildingId,geometry(s.buildings.find(b=>b.id===t.buildingId))];}
+function cellShape(s,p){const t=s.tiles[gridIndex(s,p.x,p.y)];return [p.x,p.y,t.terrain,t.road,t.bridge||false,interchangeAt(s,p),t.zone,t.businessKind||null,t.buildingId,geometry(s.buildings.find(b=>b.id===t.buildingId))];}
 function plan(sim,method,args){
  if(method==='build')return sim.preview(args[0],args[1],args[2]||{});
  if(method==='upgradeAllRoads')return sim.previewUpgradeAllRoads();
@@ -38,6 +39,7 @@ function affected(state,method,args,offer){
  const groups=civicGardenGroups(state.buildings);
  ids=ids.flatMap(id=>groups.get(id)?.members||[id]);
  for(const b of state.buildings.filter(b=>ids.includes(b.id)))for(let y=0;y<(b.footprint||1);y++)for(let x=0;x<(b.footprint||1);x++)cells.push({x:b.x+x,y:b.y+y});
+ cells=[...cells,...cells.flatMap(p=>{const item=interchangeAt(state,p);return item?interchangeCells(item):[];})];
  return [...new Map(cells.filter(p=>inGrid(state,p.x,p.y)).map(p=>[gridIndex(state,p.x,p.y),{x:p.x,y:p.y}])).values()].sort((a,b)=>a.y-b.y||a.x-b.x);
 }
 function validate(method,a){

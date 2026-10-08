@@ -12,7 +12,7 @@ test('the city catalog covers every building family and every visible vehicle ty
   const sim=new CitySimulation(),before=JSON.stringify(sim.state),catalog=cityCatalog(sim.state);
   const expectedBuildings=11+Object.keys(BUSINESS_KINDS).length+Object.keys(COMMUNITY_BUILDINGS).length+Object.keys(DECORATIONS).length+Object.keys(LANDMARKS).length;
   assert.equal(catalog.buildings.length,expectedBuildings);
-  assert.equal(catalog.vehicles.length,11+Object.keys(YACHT_TYPES).length);
+  assert.equal(catalog.vehicles.length,13+Object.keys(YACHT_TYPES).length);
   for(const id of ['vehicle:compact','vehicle:hatchback','vehicle:suv','vehicle:taxi','vehicle:minivan','vehicle:pickup','vehicle:delivery-van'])assert(catalog.vehicles.some(item=>item.id===id),id);
   assert.equal(new Set([...catalog.buildings,...catalog.vehicles].map(item=>item.id)).size,catalog.total);
   assert.equal(catalog.buildings.find(item=>item.id==='building:residential').maxLevel,6);

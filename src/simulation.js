@@ -1,3 +1,7 @@
+import {RouteHeap as Heap,vehicleNetwork,vehicleRoadPath} from './vehicle-routing.js';
+import {roadPath} from './road-network.js';
+import {INTERCHANGE_MAINTENANCE,interchangeOffer,interchangeBounds,interchangeAt,interchangeCells,interchangeGeometryReason,refreshInterchanges,groundRoadAccess,roadNodes,roadSteps,roadIndex} from './interchanges.js';
+import {busRoutes,servedBusStops,busCommuteAvailable,policeCoverageCells} from './network-services.js';
 import {LARGE_UTILITIES,utilityScale} from './utility-buildings.js';
 import {LEGACY_WIDE_PRIVATE_KINDS} from './business-kinds.js';
 import {requiresRoad} from './building-access.js';
@@ -22,11 +26,12 @@ import { FIRE_BUDGETS, CIVIC_POLICIES, activeCivicPolicy, cityHallRequirement, c
 import {CITY_INCIDENT_TYPES,ensureCityIncidents,refreshCityIncidents,advanceCityIncidents,buildingIncidentEffects,cityIncidentDemandPenalty,incidentAlert,incidentTitle} from './city-incidents.js';
 import {workforceDashboard} from './workforce-dashboard.js';
 import {DEFAULT_MAP_SIZE,validMapSize} from './grid.js';
+import {cityEntrances,entranceRoadIndexes,ENTRANCE_SIDE_NAMES} from './city-entrances.js';
 import {DEFAULT_CITY_GOAL,loadCityGoal,latchCityGoal,newCityGoal,validCityGoal} from './city-goals.js';
 
 export const SIZE = DEFAULT_MAP_SIZE;
 export const TOOLS = {
-  road: { label: '道路', cost: 25, description: '连接入口与街区；拖动连续铺设', key: '1' },
+  road: { label: '道路', cost: 25, description: '拖动铺路；接到地图边缘可增设对外入口', key: '1' },
   residential: { label: '住宅', cost: ZONE_ECONOMY.residential.cost, description: '规划住宅区，临路且通水电后自动成长', key: '2' },
   commercial: { label: '商业', cost: ZONE_ECONOMY.commercial.cost, description: '提供消费与岗位，需要居民支持', key: '3' },
   industrial: { label: '工业', cost: ZONE_ECONOMY.industrial.cost, description: '提供大量岗位与货源，也产生污染', key: '4' },
@@ -34,6 +39,9 @@ export const TOOLS = {
   water: { label: '水塔', cost: 1500, description: '容量 900；月维护 80；可随城市阶段升至六级', key: '6' },
   park: { label: '小公园', cost: 600, description: '无需道路水电，改善半径 5 格环境；月维护 18', key: '7' },
   plaza: { label: '滨水广场', cost: 1400, description: '无需道路水电，改善半径 8 格环境；月维护 35' },
+  interchangeNS:{label:'立交 · 南北高架',cost:6000,description:'预览并改造三格及以上宽的十字路口，南北高架、东西地面；高架两端需各两格坡道及平路接头'},
+  interchangeEW:{label:'立交 · 东西高架',cost:6000,description:'预览并改造三格及以上宽的十字路口，东西高架、南北地面；高架两端需各两格坡道及平路接头'},
+  interchangeFlat:{label:'恢复平面路口',cost:0,description:'移除立交结构并保留全部道路，恢复平面转弯与红绿灯'},
   bridge: { label: '桥梁', cost: 3500, description: '选择河面或岸边；两岸有落点、无建筑阻挡且资金足够即可建造' },
   upgrade: { label: '升级', cost: 30, description: '道路升级只看人口；建筑升级按城市阶段、服务与景观条件解锁' },
   bulldoze: { label: '拆除', cost: 0, description: '拆除道路、建筑与分区；设施回收部分费用', key: '8' },
@@ -67,27 +75,6 @@ const round = n => Math.round(n * 10) / 10;
 const capacity = b => PRIVATE.includes(b.type) ? buildingCapacity(b) : communityService(b)?.jobs||0;
 const neighbors = (x, y, size = SIZE) => [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]].filter(([a, b]) => inBounds(a, b, size));
 
-class Heap {
-  constructor() { this.items = []; }
-  push(value) {
-    const a = this.items; a.push(value); let i = a.length - 1;
-    while (i > 0) { const p = (i - 1) >> 1; if (a[p][0] <= value[0]) break; a[i] = a[p]; i = p; }
-    a[i] = value;
-  }
-  pop() {
-    const a = this.items; const first = a[0]; const last = a.pop();
-    if (a.length) {
-      let i = 0;
-      while (i * 2 + 1 < a.length) {
-        let c = i * 2 + 1; if (c + 1 < a.length && a[c + 1][0] < a[c][0]) c++;
-        if (a[c][0] >= last[0]) break; a[i] = a[c]; i = c;
-      }
-      a[i] = last;
-    }
-    return first;
-  }
-}
-
 export class CitySimulation {
   constructor({ demo = false, seed = 2026, terrainPreset = 'bayside', mapSize = SIZE, cityGoal = DEFAULT_CITY_GOAL, terrainDraft } = {}) {
     if(!Object.hasOwn(TERRAIN_PRESETS,terrainPreset))throw new Error('未知地形预设');
@@ -101,6 +88,7 @@ export class CitySimulation {
     this.state = {
       version: 1, mapSize, terrainPreset, seed: cleanSeed, rng: cleanSeed || 1, tick: 0, month: 1, money: 30000,
       taxRate: 9, tiles: [], buildings: [], nextId: 1, districtName: terrainPreset==='bayside'?'湾畔市':TERRAIN_PRESETS[terrainPreset].name+'新城', mayorName: '', cityGoal:newCityGoal(cityGoal),
+      interchanges:[],
       milestones: { named: false, bridge: false, density: false, landmark: false, completed: false, metropolis: false, capital: false, regional:false, mature:false, civic:false, global:false }, roadLevelUnlocked:1,
       loan: { taken: false, remaining: 0, grace: 0, monthsPaid: 0 }, profitableMonths: 0,
       cityLife: { lastEventMonth: 0, activeEvent: null },
@@ -203,7 +191,7 @@ export class CitySimulation {
   }
 
   _adjacentRoads(x, y, size = 1) {
-    return [...new Set(buildingCells({x,y,footprint:size}).flatMap(c => this._neighbors(c.x,c.y)).map(([a, b]) => this._index(a, b)))].filter(i => this.state.tiles[i].road && this.state.tiles[i].connected);
+    return [...new Set(buildingCells({x,y,footprint:size}).flatMap(c => this._neighbors(c.x,c.y)).map(([a, b]) => this._index(a, b)))].filter(i => this.state.tiles[i].road && this.state.tiles[i].connected && groundRoadAccess(this.state.tiles[i]));
   }
 
   _workplaceRoads(building) {
@@ -211,7 +199,7 @@ export class CitySimulation {
     if(adjacent.length||!isCommunityBusiness(building.type))return adjacent;
     const cells=buildingCells(building);let nearest=Infinity,result=[];
     for(let i=0;i<this.state.tiles.length;i++){
-      const tile=this.state.tiles[i];if(!tile.road||!tile.connected)continue;
+      const tile=this.state.tiles[i];if(!tile.road||!tile.connected||!groundRoadAccess(tile))continue;
       const distance=Math.min(...cells.map(cell=>Math.abs(cell.x-tile.x)+Math.abs(cell.y-tile.y)));
       if(distance>4||distance>nearest)continue;
       if(distance<nearest){nearest=distance;result=[];}
@@ -221,7 +209,7 @@ export class CitySimulation {
   }
 
   _hasRoadside(x,y,size=1) {
-    return buildingCells({x,y,footprint:size}).some(c=>this._neighbors(c.x,c.y).some(([a,b])=>this.tile(a,b)?.road));
+    return buildingCells({x,y,footprint:size}).some(c=>this._neighbors(c.x,c.y).some(([a,b])=>this.tile(a,b)?.road&&groundRoadAccess(this.tile(a,b))));
   }
 
   preview(tool, inputCells, options = {}) {
@@ -238,6 +226,7 @@ export class CitySimulation {
     if (!Object.hasOwn(TOOLS, tool)) return invalid('请选择有效的建设工具');
     if (!Array.isArray(inputCells) || !inputCells.length || inputCells.length > this.state.mapSize ** 2) return invalid('请选择地图上的位置');
     if (inputCells.some(c => !c || !this._inBounds(c.x, c.y))) return invalid('不能在地图之外建设');
+    if(tool.startsWith('interchange'))return interchangeOffer(this.state,inputCells[0],tool==='interchangeNS'?'ns':tool==='interchangeEW'?'ew':null);
     let cells = [...new Map(inputCells.map(c => [this._index(c.x, c.y), { x: c.x, y: c.y }])).values()];
     if (PUBLIC.includes(tool)) cells = cells.slice(0, 1);
     if (tool === 'upgrade' && !options.roadsOnly) {
@@ -344,6 +333,13 @@ export class CitySimulation {
     if (!p.valid) return { ok: false, message: p.reason, cost: p.cost };
     this._undo = { tick: this.state.tick, state: clone(this.state) };
     this.state.money -= p.cost;
+    if(tool.startsWith('interchange')){
+      this.state.interchanges=(this.state.interchanges||[]).filter(item=>item.x!==p.center.x||item.y!==p.center.y);
+      if(p.axis)this.state.interchanges.push({...p.center,axis:p.axis});
+      this.recalculate();
+      return {ok:true,cost:p.cost,message:p.axis?`已设置${p.axis==='ns'?'南北':'东西'}高架立交桥`:'已恢复平面路口，道路已保留'};
+    }
+    if(tool==='bulldoze')this.state.interchanges=(this.state.interchanges||[]).filter(item=>!interchangeCells(item).some(c=>p.cells.some(p=>p.x===c.x&&p.y===c.y)));
     const size=newBuildingFootprint(options.businessKind||tool);
     for (const { x, y } of size > 1 ? p.cells.slice(0,1) : p.cells) {
       const t = this.tile(x, y);
@@ -434,6 +430,7 @@ export class CitySimulation {
     const from = this.tile(source.x, source.y);
     if (!from?.road) return invalid('原道路已发生变化，请重新选择');
     if (source.x === 0 && source.y === 32) return invalid('城市入口道路不能移动');
+    if(interchangeAt(this.state,source))return invalid('立交桥道路需保持完整，请先恢复平面路口再移动');
     if (from.bridge) return invalid('桥梁需保持完整跨河结构，请使用桥梁工具重新规划');
     if (!destination || !this._inBounds(destination.x, destination.y)) return invalid('请选择地图内的空地');
     const cells = [{ x: destination.x, y: destination.y }];
@@ -465,37 +462,38 @@ export class CitySimulation {
   }
 
   _connectedRoads(removed = new Set()) {
-    const seen = new Set(); const start = this._index(0, 32); const tiles = this.state.tiles;
-    if (!tiles[start].road || removed.has(start)) return seen;
-    const queue = [start]; seen.add(start);
-    for (let q = 0; q < queue.length; q++) {
-      const t = tiles[queue[q]];
-      for (const [x, y] of this._neighbors(t.x, t.y)) {
-        const i = this._index(x, y);
-        if (tiles[i].road && !removed.has(i) && !seen.has(i)) { seen.add(i); queue.push(i); }
-      }
+    const seen=new Set();
+    const queue=entranceRoadIndexes(this.state,{removed}).flatMap(i=>roadNodes(this.state,i)),visited=new Set(queue);
+    for(let head=0;head<queue.length;head++){
+      const node=queue[head];seen.add(roadIndex(node));
+      for(const next of roadSteps(this.state,node,{removed}))if(!visited.has(next)){visited.add(next);queue.push(next);}
     }
     return seen;
   }
 
-  _path(starts, goals, extraLoad = 0) {
-    if (!starts.length || !goals.length) return [];
-    const target = new Set(goals); const dist = new Map(); const prev = new Map(); const heap = new Heap();
-    for (const i of starts) { dist.set(i, 0); heap.push([0, i]); }
-    while (heap.items.length) {
-      const [d, i] = heap.pop(); if (d !== dist.get(i)) continue;
-      if (target.has(i)) {
-        const path = [i]; let j = i;
-        while (prev.has(j)) { j = prev.get(j); path.push(j); }
+  _path(starts, goals, extraLoad = 0, {includeStartCost=false,vehicle=false,from,to} = {}) {
+    if(vehicle){
+      const cost=i=>{const t=this.state.tiles[i],load=(t.trafficLoad+extraLoad)/t.trafficCapacity;return ROAD_TIERS[t.road].travelCost*(1+Math.max(0,load-.6)**2*4);};
+      return vehicleRoadPath(this.state,starts,goals,{from,to,network:this._vehicleNetwork,cost,startCost:includeStartCost?cost:()=>0});
+    }
+    if(!starts.length||!goals.length)return [];
+    const target=new Set(goals.flatMap(i=>roadNodes(this.state,i))),dist=new Map(),prev=new Map(),heap=new Heap();
+    for(const node of starts.flatMap(i=>roadNodes(this.state,i))){
+      const t=this.state.tiles[roadIndex(node)],load=(t.trafficLoad+extraLoad)/t.trafficCapacity;
+      const cost=includeStartCost?ROAD_TIERS[t.road].travelCost*(1+Math.max(0,load-.6)**2*4):0;
+      dist.set(node,cost);heap.push([cost,node]);
+    }
+    while(heap.items.length){
+      const [d,node]=heap.pop();if(d!==dist.get(node))continue;
+      if(target.has(node)){
+        const path=[roadIndex(node)];let at=node;
+        while(prev.has(at)){at=prev.get(at);path.push(roadIndex(at));}
         return path.reverse();
       }
-      const t = this.state.tiles[i];
-      for (const [x, y] of this._neighbors(t.x, t.y)) {
-        const j = this._index(x, y); const n = this.state.tiles[j];
-        if (!n.road || !n.connected) continue;
-        const load = (n.trafficLoad + extraLoad) / n.trafficCapacity;
-        const next = d + ROAD_TIERS[n.road].travelCost * (1 + Math.max(0, load - 0.6) ** 2 * 4);
-        if (next < (dist.get(j) ?? Infinity)) { dist.set(j, next); prev.set(j, i); heap.push([next, j]); }
+      for(const nextNode of roadSteps(this.state,node,{connected:true})){
+        const n=this.state.tiles[roadIndex(nextNode)],load=(n.trafficLoad+extraLoad)/n.trafficCapacity;
+        const next=d+ROAD_TIERS[n.road].travelCost*(1+Math.max(0,load-.6)**2*4);
+        if(next<(dist.get(nextNode)??Infinity)){dist.set(nextNode,next);prev.set(nextNode,node);heap.push([next,nextNode]);}
       }
     }
     return [];
@@ -503,6 +501,9 @@ export class CitySimulation {
 
   recalculate() {
     const s = this.state, tiles = s.tiles, buildings = s.buildings;
+    refreshInterchanges(s);
+    const vehicleKey=s.mapSize+'|'+tiles.filter(t=>t.road).map(t=>`${t.x},${t.y}:${t.road}:${t.interchange?.axis||''}:${t.interchange?.core||false}`).join('|');
+    if(this._vehicleState!==s||this._vehicleKey!==vehicleKey){this._vehicleNetwork=vehicleNetwork(s);this._vehicleKey=vehicleKey;this._vehicleState=s;}
     ensureCityIncidents(s);refreshCityIncidents(s);
     if (s.cityLife.activeEvent && s.cityLife.activeEvent.expiresMonth <= s.month) s.cityLife.activeEvent = null;
     const cityEventBonus = s.cityLife.activeEvent?.bonus || 0;
@@ -525,7 +526,7 @@ export class CitySimulation {
     const waterCapacity = powerCapacity > 0 ? facilities('water').reduce((sum, b) => sum + utilityCapacity(b), 0) : 0;
     let powerUsed = 0, waterUsed = 0;
     const demand = b => (PRIVATE.includes(b.type)||COMMUNITY_BUILDINGS[b.type]?.jobs) ? Math.max(4, b.type === 'residential' ? b.population : capacity(b) * 0.7) : 2*utilityScale(b);
-    const servicePriority = b => ['power', 'water'].includes(b.type) ? 2 : ['fireStation', 'cityHall'].includes(b.type) ? 1 : 0;
+    const servicePriority = b => ['power', 'water'].includes(b.type) ? 2 : ['fireStation', 'cityHall','policeStation','busStop'].includes(b.type) ? 1 : 0;
     const serviceOrder = [...buildings].sort((a, b) => servicePriority(b) - servicePriority(a) || a.id - b.id);
     for (const b of serviceOrder) {
       if (GARDENS.includes(b.type)) {
@@ -563,12 +564,14 @@ export class CitySimulation {
           else t.pollution = clamp(t.pollution + (1 - d / radius) * (industrial ? 24 : 13));
         }
     }
+    const transitRoutes=busRoutes(s),busStops=servedBusStops(s,transitRoutes),busStopIds=new Set(busStops.map(b=>b.id));
     for (const b of buildings) {
       const service = communityService(b);
-      if (!service || !civicServiceReady(s,b)) continue;
-      for (let y = Math.max(0,b.y-service.radius); y <= Math.min(this.state.mapSize-1,b.y+service.radius); y++)
-        for (let x = Math.max(0,b.x-service.radius); x <= Math.min(this.state.mapSize-1,b.x+service.radius); x++) {
-          if (Math.hypot(x-b.x,y-b.y)>service.radius) continue;
+      if (!service || !civicServiceReady(s,b)||(b.type==='busStop'&&!busStopIds.has(b.id))) continue;
+      const roadCells=service.roadService?new Set(policeCoverageCells(s,b)):null,extent=service.radius+(service.roadService?1:0);
+      for (let y = Math.max(0,b.y-extent); y <= Math.min(this.state.mapSize-1,b.y+extent); y++)
+        for (let x = Math.max(0,b.x-extent); x <= Math.min(this.state.mapSize-1,b.x+extent); x++) {
+          if (roadCells?!roadCells.has(this._index(x,y)):Math.hypot(x-b.x,y-b.y)>service.radius) continue;
           const t=this.tile(x,y);
           const category=service.service||b.type,previous=t.communityServices[category]||0;
           if(service.bonus>previous){t.communityServices[category]=service.bonus;t.communityBonus+=service.bonus-previous;}
@@ -590,13 +593,17 @@ export class CitySimulation {
     const population = homes.reduce((a, b) => a + b.population, 0);
     const jobs = firms.reduce((a, b) => a + b.jobs, 0);
     let employed = 0; s.routes = [];
-    const addRoute = (path, kind, load, assignment = {}) => {
+    const addRoute = (path, kind, load, assignment = {}, returning = []) => {
       load = round(load);
       if (!path.length || load <= 0) return;
-      for (const i of path) tiles[i].trafficLoad += load;
-      const route={ points: path.map(i => ({ x: tiles[i].x, y: tiles[i].y })), kind, load: round(load), ...assignment };
+      const roadLoad=assignment.walking?0:load;
+      for (const i of path) tiles[i].trafficLoad += returning.length?roadLoad/2:roadLoad;
+      for (const i of returning) tiles[i].trafficLoad += roadLoad/2;
+      const route={ points: path.map(i => ({ x: tiles[i].x, y: tiles[i].y })), kind, load: round(load), ...assignment, returnPoints:returning.map(i=>({x:tiles[i].x,y:tiles[i].y})) };
       s.routes.push(route);return route;
     };
+    for(const route of transitRoutes)for(const p of route.points.slice(0,route.outboundLength||(route.points.length+1)/2))this.tile(p.x,p.y).trafficLoad+=1;
+    let transitCommuters=0;
     for (const home of homes) {
       if (!home.connected || !home.active || !home.powered || !home.watered) continue;
       let seekers = Math.floor(home.population * 0.55); let commuteSum = 0; let assigned = 0;
@@ -605,21 +612,52 @@ export class CitySimulation {
       for (const firm of nearest) {
         if (!seekers) break;
         const amount = Math.min(seekers, firm.jobs - firm.workers);
-        const path = this._path(this._adjacentRoads(home.x, home.y,footprintSize(home)), this._workplaceRoads(firm), amount);
+        // Nearby jobs use sidewalks rather than creating a motor trip around
+        // the block merely to reach the opposite curb.
+        const nearby=Math.abs(home.x-firm.x)+Math.abs(home.y-firm.y)<=footprintSize(home)+footprintSize(firm)+7?roadPath(s,home,firm):[];
+        const walking=nearby.length>0&&nearby.length<=8&&!busCommuteAvailable(busStops,home,firm);
+        const path = walking?nearby.map(p=>this._index(p.x,p.y)):this._path(this._adjacentRoads(home.x, home.y,footprintSize(home)), this._workplaceRoads(firm), amount, {vehicle:true,from:home,to:firm});
         if (!path.length) continue;
+        const returning=walking?[...path].reverse():this._path([path.at(-1)],[path[0]],amount,{vehicle:true,from:firm,to:home});
+        if(!returning.length)continue;
         seekers -= amount; firm.workers += amount; employed += amount; assigned += amount;
-        const route=addRoute(path, 'commute', amount, {homeId:home.id,workplaceId:firm.id});
-        const duration = path.reduce((a, i) => a + 0.65 * (1 + Math.max(0, tiles[i].trafficLoad / tiles[i].trafficCapacity - 0.6) ** 2 * 1.5), 1);
+        const transit=path.length>=4&&busCommuteAvailable(busStops,home,firm);
+        if(transit)transitCommuters+=amount;
+        const route=addRoute(path, 'commute', amount*(transit ? .6 : 1), {homeId:home.id,workplaceId:firm.id,commuters:amount,transit,walking},returning);
+        const duration = walking?1+path.length*.65:path.reduce((a, i) => a + 0.65 * (1 + Math.max(0, tiles[i].trafficLoad / tiles[i].trafficCapacity - 0.6) ** 2 * 1.5), 1)*(transit ? .85 : 1);
         route.duration=round(duration);
         commuteSum += duration * amount;
       }
       home.workers = assigned; home.commute = assigned ? round(commuteSum / assigned) : 0;
     }
+    const entrances=cityEntrances(s),entryRoads=entrances.flatMap(p=>p.roadIndexes);
     for (const firm of firms) {
       if (!firm.workers) continue;
-      const load = firm.type === 'industrial' ? firm.workers * 0.15 : firm.workers * 0.06;
-      addRoute(this._path([this._index(0, 32)], this._workplaceRoads(firm), load), 'freight', load);
+      let remaining=round(firm.workers*(firm.type==='industrial'?.15:.06));
+      // Assign deliveries in batches: a large employer can use several routes
+      // as each previous delivery adds pressure to its chosen gateway.
+      const batch=entryRoads.length>1?Math.max(17,Math.ceil(remaining/8*10)/10):remaining;
+      const routes=new Map();
+      while(remaining>0){
+        const load=Math.min(batch,remaining),path=this._path(entryRoads,this._workplaceRoads(firm),load,{includeStartCost:true,vehicle:true,to:firm});
+        if(!path.length)break;
+        const returning=this._path([path.at(-1)],[path[0]],load,{vehicle:true,from:firm});
+        if(!returning.length)break;
+        const key=path.join(',')+'|'+returning.join(','),existing=routes.get(key);
+        if(existing){for(const i of path)tiles[i].trafficLoad+=load/2;for(const i of returning)tiles[i].trafficLoad+=load/2;existing.load=round(existing.load+load);}
+        else routes.set(key,addRoute(path,'freight',load,{workplaceId:firm.id,entrance:{x:tiles[path[0]].x,y:tiles[path[0]].y}},returning));
+        remaining=round(remaining-load);
+      }
     }
+    const freightByEntry=new Map();
+    for(const route of s.routes)if(route.kind==='freight'){
+      const i=this._index(route.points[0].x,route.points[0].y),entry=freightByEntry.get(i)||{load:0,routes:0};
+      entry.load+=route.load;entry.routes++;freightByEntry.set(i,entry);
+    }
+    const entranceStats=entrances.map(p=>({...p,lanes:p.roadIndexes.length,
+      capacity:p.roadIndexes.reduce((sum,i)=>sum+tiles[i].trafficCapacity,0),
+      freightLoad:round(p.roadIndexes.reduce((sum,i)=>sum+(freightByEntry.get(i)?.load||0),0)),
+      routes:p.roadIndexes.reduce((sum,i)=>sum+(freightByEntry.get(i)?.routes||0),0)}));
     let trafficWeight = 0, trafficScore = 0;
     for (const t of tiles) if (t.road) {
       t.traffic = clamp(Math.round(t.trafficLoad / t.trafficCapacity * 70));
@@ -634,7 +672,8 @@ export class CitySimulation {
     const civicPolicy=activeCivicPolicy(s);
     let happinessTotal = 0;
     for (const b of buildings) {
-      const t = this.tile(b.x, b.y);
+      const t = this.tile(b.x, b.y),incident=buildingIncidentEffects(s,b);
+      b.incidentHappinessPenalty=incident.happinessPenalty;b.incidentMigrationPenalty=incident.migrationPenalty;
       let score = 77 + t.amenity + t.communityBonus - t.pollution * 0.55 - Math.max(0, s.taxRate - 9) * 4;
       if (b.type === 'residential') {
         score += cityEventBonus;
@@ -661,7 +700,7 @@ export class CitySimulation {
     }
     const counts = Object.fromEntries(TYPES.map(type => [type, buildings.filter(b => b.type === type).length]));
     const roadCount = tiles.filter(t => t.road).length;
-    const roadMaintenance = tiles.reduce((a, t) => a + (t.road ? (t.bridge ? 11 + Math.max(0, ROAD_TIERS[t.road].maintenance - 1.5) : ROAD_TIERS[t.road].maintenance) : 0), 0);
+    const roadMaintenance = (s.interchanges||[]).length*INTERCHANGE_MAINTENANCE+tiles.reduce((a, t) => a + (t.road ? (t.bridge ? 11 + Math.max(0, ROAD_TIERS[t.road].maintenance - 1.5) : ROAD_TIERS[t.road].maintenance) : 0), 0);
     const facilityCostMultiplier=civicPolicy?.publicCostMultiplier||1;
     const facilityMaintenance = buildings.filter(b=>!isCommunityBusiness(b.type)).reduce((a, b) => a + (b.type === 'fireStation' ? FIRE_BUDGETS[s.civic.fireBudget].monthlyCost : MAINTENANCE[b.type] || 0) * maintenanceMultiplier(b) * utilityScale(b) * (b.active ? 1 : 0.15), 0)*facilityCostMultiplier;
     const publicSectorPayroll=publicPayroll(facilityMaintenance);
@@ -708,8 +747,10 @@ export class CitySimulation {
       population, jobs, employed, employmentRate, workforce, happiness, income, expenses, balance: income - expenses,
       powerUsed: Math.round(powerUsed), powerCapacity, waterUsed: Math.round(waterUsed), waterCapacity,
       traffic: trafficWeight ? Math.round(trafficScore / trafficWeight) : 100,
+      entrances:entranceStats,
       roadCount, counts, profitableMonths: s.profitableMonths, housingCapacity,
       cityEventBonus,
+      transit:{routes:transitRoutes.length,stops:busStops.length,commuters:transitCommuters},
       incidentDemandPenalty,
       incidents:ensureCityIncidents(s).active.map(event=>({...event,title:incidentTitle(event.kind)})),
       civic,
@@ -1007,7 +1048,7 @@ export class CitySimulation {
       const metrics = [{label:'占地',value:`${footprintSize(b)} × ${footprintSize(b)} 格`},{ label: '道路连接', value: !requiresRoad(b.type) ? '无需连接' : b.connected ? '已连通' : '未连通' }, { label: '电力 / 供水', value: `${b.powered ? '有电' : '缺电'} / ${b.watered ? '有水' : '缺水'}` }];
       if(b.coverageDescription)metrics.push({label:'服务覆盖范围',value:b.coverageDescription},{label:'当前覆盖',value:b.coverageCells.length?`${b.coverageCells.length} 格（地图高亮）`:'未生效，请检查设施状态'});
       if(b.type==='residential'){
-        for(const type of ['clinic','school','sportsHall','library','spiritual','entertainment','shopping','park','cityHall']){const level=b.serviceLevels?.[type]||0;metrics.push({label:SERVICE_LABELS[type]+'覆盖',value:level?`${level} 级覆盖`:'未覆盖'});}
+        for(const type of ['policeStation','busStop','clinic','school','sportsHall','library','spiritual','entertainment','shopping','park','cityHall']){const level=b.serviceLevels?.[type]||0;metrics.push({label:SERVICE_LABELS[type]+'覆盖',value:level?`${level} 级覆盖`:'未覆盖'});}
         metrics.push({label:'市政覆盖说明',value:'市政府一级覆盖 10 格；区政务中心依托市政府提供 6 格片区覆盖。两者每升一级均增加 2 格。'});
         const beauty=this.getCommunityBeauty(x,y);
         metrics.push({label:'社区美观',value:`${beauty.value.toFixed(1)} / ${beauty.cap} · 升四级需 12`});
@@ -1018,7 +1059,9 @@ export class CitySimulation {
       if(PRIVATE.includes(b.type)){const group=privateBuildingGroups(this.state.buildings,this.state.tiles).get(b.id);metrics.push({label:'建筑形态',value:group?`${group.members.length===2?'双':'三'}联排 · ${group.level} 级整体立面`:'独栋'});}
       if(b.businessKind)metrics.push({label:'建筑类型',value:BUSINESS_KINDS[b.businessKind].name});
       if(PRIVATE.includes(b.type))metrics.push({label:'建筑风格',value:buildingStyle(b).name});
-      if (COMMUNITY_BUILDINGS[b.type]) metrics.push({ label: '服务半径', value: `${communityService(b).radius} 格` }, { label: '住宅满意度', value: `+${communityService(b).bonus}，同类取最高值` });
+      if(b.type==='policeStation')metrics.push({label:'巡逻范围',value:`沿道路 ${communityService(b).radius} 格`},{label:'治安保护',value:'覆盖居民降低抢劫风险，事件满意度与迁出影响减半'});
+      if(b.type==='busStop'){const routes=busRoutes(this.state).filter(r=>r.facilityId===b.id||r.targetId===b.id);metrics.push({label:'公交线路',value:routes.length?`${routes.length} 条往返线路`:'尚未开通 · 需要另一座连通道路、水电正常的公交站'},{label:'通勤减负',value:'两端站点 4 格内：车流 −40%，通勤时间 −15%'},{label:'全城公交通勤',value:`${this.state.stats.transit?.commuters||0} 人`});}
+      if (COMMUNITY_BUILDINGS[b.type]) metrics.push({ label: COMMUNITY_BUILDINGS[b.type].roadService?'道路服务范围':'服务半径', value: `${communityService(b).radius} 格` }, { label: '住宅满意度', value: `+${communityService(b).bonus}，同类取最高值` });
       if (COMMUNITY_BUILDINGS[b.type]?.beauty) metrics.push({label:'社区美观加成',value:`最高 +${communityService(b).beauty} · 随距离递减`},{label:'休闲娱乐加成',value:`满意度 +${communityService(b).bonus} · 同类取最高值`});
       if(b.type==='marina'){
         const boats=this.state.marinaLife.boats.filter(v=>v.marinaId===b.id);
@@ -1054,11 +1097,23 @@ export class CitySimulation {
       metrics.push({ label: '周边污染', value: `${Math.round(t.pollution)} / 100` });
       const localIncident=ensureCityIncidents(this.state).active.find(event=>Math.hypot(b.x-event.x,b.y-event.y)<=CITY_INCIDENT_TYPES[event.kind].radius);
       if(localIncident){const type=CITY_INCIDENT_TYPES[localIncident.kind];metrics.push({label:'当前风险事件',value:`${type.title} · 持续至第 ${localIncident.expiresMonth-1} 月末`},{label:'改善方向',value:type.solution});}
-      return { title: b.type === 'cityHall' ? `${this.state.districtName} · ${b.level === 1 ? '市政府' : BUILDING_TIERS.cityHall.names[b.level - 1]}` : (utilityScale(b)>1 ? (b.level===1?(b.type==='power'?'大型供电站':'大型供水站'):'大型'+BUILDING_TIERS[b.type].names[b.level-1]) : businessKind(b.businessKind)?.name || BUILDING_TIERS[b.type]?.names[b.level - 1] || NAMES[b.type]), subtitle: `${COMMUNITY_BUILDINGS[b.type]?.fixedFacility ? '完整大型设施'+(b.level>1?' · 保留原有 '+b.level+' 级效益':'') : LANDMARKS[b.type] ? '名胜等级 '+b.level+' / '+MAX_LANDMARK_LEVEL : BUILDING_TIERS[b.type] ? '等级 ' + b.level + ' / 6' : '市政设施'} · ${b.progress < 1 ? `施工 ${Math.round(b.progress * 100)}%` : `(${x}, ${y})`}`, metrics, problem: b.problem,
-        tip: localIncident?CITY_INCIDENT_TYPES[localIncident.kind].solution:LANDMARKS[b.type]?'名胜可逐步修缮至三级，需要人口、城市阶段和市长荣誉共同达标。每级贡献 2 / 4 / 6 点荣誉积分，完工后增加积分、提升外观与环境覆盖，占地不变。':isUtility(b.type) ? '连接入口道路并启用后供应全城。点击升级按钮扩容，二级起依次随 1,000 / 5,000 / 10,000 / 20,000 / 50,000 人城市阶段解锁；改造期间维持原等级容量，完工后提升供应，占地不变。' : b.type==='districtOffice'?'区政务中心是市政府的片区服务站：可重复建设并扩展方针与住宅市政覆盖，但只有市政府正常办公时才生效。':COMMUNITY_BUILDINGS[b.type] ? `${requiresRoad(b.type)?'接通对外道路和水电':'无需临路，城市水电供应充足'}、完成施工后提供服务；暂停或搬离后原街区加成消失，同类服务不叠加。` : !b.connected ? '为建筑相邻的一格接上道路，并将道路连回西侧入口。' : !b.powered || !b.watered ? '检查设施是否运行且临路，以及水电容量是否足够。' : b.problem.includes('污染') ? '将工厂与住宅隔开；公园能改善环境，但不能消除污染。' : b.problem.includes('通勤') ? '补充有竞争力的连接、升级拥堵道路，或把工作机会搬近。' : b.type === 'residential' ? '岗位、公园和低污染让居民愿意留下；满员后可扩张街区。' : b.type === 'commercial' ? '商业提供消费与工作；本地工业可以降低进货成本。' : b.type === 'industrial' ? '工厂提供工作与货源，也带来污染和货运。' : b.type === 'fireStation' ? '消防覆盖沿真实连通道路计算。通过市政府调整预算，覆盖住宅满意度 +2。消防演练不会造成损失。' : b.type === 'cityHall' ? '打开城市政务选择市政方针。市政府正常办公时，方针会立即影响覆盖住宅、公共支出或企业经营，并开放消防管理。' : '市政设施需要连接道路。暂停可节约 85% 维护费。', buildingId: b.id, active: b.active };
+      return { title: b.type === 'cityHall' ? `${this.state.districtName} · ${b.level === 1 ? '市政府' : BUILDING_TIERS.cityHall.names[b.level - 1]}` : (utilityScale(b)>1 ? (b.level===1?(b.type==='power'?'大型供电站':'大型供水站'):'大型'+BUILDING_TIERS[b.type].names[b.level-1]) : businessKind(b.businessKind)?.name || BUILDING_TIERS[b.type]?.names[b.level - 1] || NAMES[b.type]), subtitle: `${COMMUNITY_BUILDINGS[b.type]?.fixedFacility ? (b.type==='busStop'?'公交设施（无需升级）':'完整大型设施')+(b.level>1?' · 保留原有 '+b.level+' 级效益':'') : LANDMARKS[b.type] ? '名胜等级 '+b.level+' / '+MAX_LANDMARK_LEVEL : BUILDING_TIERS[b.type] ? '等级 ' + b.level + ' / 6' : '市政设施'} · ${b.progress < 1 ? `施工 ${Math.round(b.progress * 100)}%` : `(${x}, ${y})`}`, metrics, problem: b.problem,
+        tip: localIncident?CITY_INCIDENT_TYPES[localIncident.kind].solution:LANDMARKS[b.type]?'名胜可逐步修缮至三级，需要人口、城市阶段和市长荣誉共同达标。每级贡献 2 / 4 / 6 点荣誉积分，完工后增加积分、提升外观与环境覆盖，占地不变。':isUtility(b.type) ? '连接入口道路并启用后供应全城。点击升级按钮扩容，二级起依次随 1,000 / 5,000 / 10,000 / 20,000 / 50,000 人城市阶段解锁；改造期间维持原等级容量，完工后提升供应，占地不变。' : b.type==='busStop'?COMMUNITY_BUILDINGS.busStop.description:b.type==='policeStation'?COMMUNITY_BUILDINGS.policeStation.description:b.type==='districtOffice'?'区政务中心是市政府的片区服务站：可重复建设并扩展方针与住宅市政覆盖，但只有市政府正常办公时才生效。':COMMUNITY_BUILDINGS[b.type] ? `${requiresRoad(b.type)?'接通对外道路和水电':'无需临路，城市水电供应充足'}、完成施工后提供服务；暂停或搬离后原街区加成消失，同类服务不叠加。` : !b.connected ? '为建筑相邻的一格接上道路，并将道路连到任一对外入口。' : !b.powered || !b.watered ? '检查设施是否运行且临路，以及水电容量是否足够。' : b.problem.includes('污染') ? '将工厂与住宅隔开；公园能改善环境，但不能消除污染。' : b.problem.includes('通勤') ? '补充有竞争力的连接、升级拥堵道路，或把工作机会搬近。' : b.type === 'residential' ? '岗位、公园和低污染让居民愿意留下；满员后可扩张街区。' : b.type === 'commercial' ? '商业提供消费与工作；本地工业可以降低进货成本。' : b.type === 'industrial' ? '工厂提供工作与货源，也带来污染和货运。' : b.type === 'fireStation' ? '消防覆盖沿真实连通道路计算。通过市政府调整预算，覆盖住宅满意度 +2。消防演练不会造成损失。' : b.type === 'cityHall' ? '打开城市政务选择市政方针。市政府正常办公时，方针会立即影响覆盖住宅、公共支出或企业经营，并开放消防管理。' : '市政设施需要连接道路。暂停可节约 85% 维护费。', buildingId: b.id, active: b.active };
     }
-    if (t.road) return { title: t.bridge ? '跨河大桥 · ' + ROAD_TIERS[t.road].name : ROAD_TIERS[t.road].name, subtitle: `等级 ${t.road} / ${MAX_ROAD_LEVEL} · (${x}, ${y})`, metrics: [{ label: '对外连通', value: t.connected ? '已连接' : '断开' }, { label: '高峰负荷 / 容量', value: `${round(t.trafficLoad)} / ${t.trafficCapacity}` }, { label: '拥堵程度', value: `${Math.round(t.traffic)}%` }, { label: '下一阶段', value: roadUpgradeOffer(t, this.state).reason }], problem: !t.connected ? '未连通入口' : t.traffic > 80 ? '高峰时段拥堵' : '', tip: '道路升级只随人口阶段开放。交通来自居民通勤和企业货运；增加更短的连接或升级道路，可以分担压力。' };
-    if (t.zone) return { title: `${businessKind(t.businessKind)?.name || TOOLS[t.zone].label}规划地块`, subtitle: `(${x}, ${y})`, metrics: [{ label: '当前需求', value: `${this.state.stats.demand[t.zone]}%` }], problem: t.zone==='commercial'&&!commercialPrerequisite(this.state,t.businessKind).allowed?commercialPrerequisite(this.state,t.businessKind).reason:!t.connected ? '缺少连接入口的临街道路' : !t.powered ? '缺少电力容量' : !t.watered ? '缺少供水容量' : this.state.stats.demand[t.zone] < 12 ? '当前市场需求不足' : '等待开发商开工', tip: '建筑只会在与道路相邻的分区上生长；道路需要连接到西侧入口。' };
+    if(t.road&&t.interchange){const item=t.interchange,b=interchangeBounds(item);return {title:`${b.width}×${b.height} 立交桥`,subtitle:`${item.axis==='ns'?'南北高架 · 东西地面':'东西高架 · 南北地面'} · 等级 ${t.road} / 7`,problem:t.traffic>=75?'高峰时段拥堵':undefined,metrics:[{label:'对外连通',value:t.connected?'已连接':'未连接'},{label:'高峰负荷 / 容量',value:`${Math.round((t.trafficLoad||0)*10)/10} / ${t.trafficCapacity}`},{label:'拥堵程度',value:Math.round(t.traffic||0)+'%'},{label:'高架方向',value:item.axis==='ns'?'南北':'东西'},{label:'路口通行',value:'上下层分别直行，转弯需走外围道路'},{label:'额外月维护',value:'¥'+INTERCHANGE_MAINTENANCE}],tip:'交通图层同时显示地面与桥面负荷。可预览改向，或恢复平面路口。'};}
+
+    if(t.road){
+      const entrance=this.state.stats.entrances.find(p=>p.roadIndexes.includes(this._index(x,y)));
+      if(entrance)return {title:'城市对外入口',subtitle:`${ENTRANCE_SIDE_NAMES[entrance.side]} · ${entrance.lanes} 格宽 · 等级 ${t.road} / ${MAX_ROAD_LEVEL} · (${x}, ${y})`,metrics:[
+        {label:'入口外部货运 / 容量',value:`${entrance.freightLoad} / ${entrance.capacity}`},
+        {label:'本格总负荷 / 容量',value:`${round(t.trafficLoad)} / ${t.trafficCapacity}`},
+        {label:'拥堵程度',value:`${Math.round(t.traffic)}%`},
+        {label:'全城对外入口',value:`${this.state.stats.entrances.length} 处`},
+        {label:'下一阶段',value:roadUpgradeOffer(t,this.state).reason}],problem:t.traffic>80?'高峰时段拥堵':'',
+        tip:'四周陆地道路接到地图边缘并通向城内，即可形成入口。企业货运按距离、道路容量和拥堵选择入口；相邻边缘车道合为一个宽入口。'};
+    }
+    if (t.road) return { title: t.bridge ? '跨河大桥 · ' + ROAD_TIERS[t.road].name : ROAD_TIERS[t.road].name, subtitle: `等级 ${t.road} / ${MAX_ROAD_LEVEL} · (${x}, ${y})`, metrics: [{ label: '对外连通', value: t.connected ? '已连接' : '断开' }, { label: '高峰负荷 / 容量', value: `${round(t.trafficLoad)} / ${t.trafficCapacity}` }, { label: '拥堵程度', value: `${Math.round(t.traffic)}%` }, { label: '下一阶段', value: roadUpgradeOffer(t, this.state).reason }], problem: !t.connected ? '未连通入口' : t.traffic > 80 ? '高峰时段拥堵' : '', tip: '道路升级只随人口阶段开放。居民通勤沿城内道路计算；企业货运可由任一对外入口进入。将道路接到地图边缘增设入口，或升级拥堵道路，可以分担压力。' };
+    if (t.zone) return { title: `${businessKind(t.businessKind)?.name || TOOLS[t.zone].label}规划地块`, subtitle: `(${x}, ${y})`, metrics: [{ label: '当前需求', value: `${this.state.stats.demand[t.zone]}%` }], problem: t.zone==='commercial'&&!commercialPrerequisite(this.state,t.businessKind).allowed?commercialPrerequisite(this.state,t.businessKind).reason:!t.connected ? '缺少连接入口的临街道路' : !t.powered ? '缺少电力容量' : !t.watered ? '缺少供水容量' : this.state.stats.demand[t.zone] < 12 ? '当前市场需求不足' : '等待开发商开工', tip: '建筑只会在与道路相邻的分区上生长；道路需要连接到任一对外入口。' };
     return { title: t.terrain === 'water' ? '河湾水域' : '待规划的土地', subtitle: `(${x}, ${y})`, metrics: [{ label: '污染', value: `${Math.round(t.pollution)} / 100` }, { label: '社区美观', value: `${t.amenity.toFixed(1)} / 28` }], problem: '', tip: t.terrain === 'water' ? '选择桥梁工具，在河面或岸边预览整座桥；两岸无建筑阻挡、资金足够即可建设。' : '选择道路、分区或设施，开始规划。住宅需要临路与水电。' };
   }
 
@@ -1196,10 +1251,10 @@ export class CitySimulation {
       civic = { fireBudget: source.fireBudget, policy:source.policy||'balanced', lastDrillMonth: source.lastDrillMonth, incident: null, history };
       if (source.incident !== null) {
         const event = source.incident;
-        if (!event || event.kind !== 'drill' || !['responding', 'controlling'].includes(event.stage) || !num(event.startedTick, 0, raw.tick, true) || !num(event.startedMonth, 1, raw.month, true) || event.startedMonth !== Math.floor(event.startedTick / 15) + 1 || source.lastDrillMonth !== event.startedMonth || !num(event.targetId, 1, 1e9,true) || !num(event.stationId, 1, 1e9, true) || event.id !== `drill-${event.startedMonth}-${event.startedTick}-${event.stationId}-${event.targetId}` || historyIds.has(event.id) || !inBounds(event.x, event.y,mapSize) || !Array.isArray(event.path) || event.path.length < 1 || event.path.length > 36) fail();
+        if (!event || event.kind !== 'drill' || !['responding', 'controlling'].includes(event.stage) || !num(event.startedTick, 0, raw.tick, true) || !num(event.startedMonth, 1, raw.month, true) || event.startedMonth !== Math.floor(event.startedTick / 15) + 1 || source.lastDrillMonth !== event.startedMonth || !num(event.targetId, 1, 1e9,true) || !num(event.stationId, 1, 1e9, true) || event.id !== `drill-${event.startedMonth}-${event.startedTick}-${event.stationId}-${event.targetId}` || historyIds.has(event.id) || !inBounds(event.x, event.y,mapSize) || !Array.isArray(event.path) || event.path.length < 1 || event.path.length > mapSize * mapSize * 4) fail();
         const station = cleanBuildings.find(b => b.id === event.stationId && b.type === 'fireStation');
         const target = cleanBuildings.find(b => b.id === event.targetId && PRIVATE.includes(b.type));
-        if (!station || !target || target.x !== event.x || target.y !== event.y || new Set(event.path).size !== event.path.length || event.path.some((i, p) => !num(i, 0, mapSize * mapSize - 1, true) || !cleanTiles[i].road || (p > 0 && Math.abs(i % mapSize - event.path[p - 1] % mapSize) + Math.abs(Math.floor(i / mapSize) - Math.floor(event.path[p - 1] / mapSize)) !== 1))) fail();
+        if (!station || !target || target.x !== event.x || target.y !== event.y || new Set(event.path.slice(1).map((i,p)=>`${event.path[p]},${i}`)).size !== event.path.length-1 || event.path.some((i, p) => !num(i, 0, mapSize * mapSize - 1, true) || !cleanTiles[i].road || (p > 0 && Math.abs(i % mapSize - event.path[p - 1] % mapSize) + Math.abs(Math.floor(i / mapSize) - Math.floor(event.path[p - 1] / mapSize)) !== 1))) fail();
         if (!neighbors(station.x, station.y,mapSize).some(([x, y]) => index(x, y,mapSize) === event.path[0]) || !neighbors(target.x, target.y,mapSize).some(([x, y]) => index(x, y,mapSize) === event.path.at(-1))) fail();
         const responseTicks = Math.max(3, Math.ceil(event.path.length / 2));
         const elapsed = raw.tick - event.startedTick;
@@ -1219,6 +1274,16 @@ export class CitySimulation {
       history: Array.isArray(raw.history) ? raw.history.slice(-120).filter(h => h && ['month', 'population', 'money', 'happiness', 'balance'].every(k => num(h[k], k === 'money' || k === 'balance' ? -1e12 : 0, 1e12))).map(h => ({ month: h.month, population: h.population, money: h.money, happiness: h.happiness, balance: h.balance })) : [],
       lastMonthly: raw.lastMonthly && ['month', 'income', 'expenses', 'balance'].every(k => num(raw.lastMonthly[k], k === 'balance' ? -1e12 : 0, 1e12)) ? { month: raw.lastMonthly.month, income: raw.lastMonthly.income, expenses: raw.lastMonthly.expenses, balance: raw.lastMonthly.balance } : null,
     };
+    if(raw.interchanges!==undefined){
+      if(!Array.isArray(raw.interchanges)||raw.interchanges.length>mapSize*mapSize/9)fail();
+      const ids=new Set();
+      sim.state.interchanges=raw.interchanges.map(item=>{
+        if(!item||typeof item!=='object'||!num(item.x,0,mapSize-1,true)||!num(item.y,0,mapSize-1,true)||!['ns','ew'].includes(item.axis)||ids.has(item.x+','+item.y))fail();
+        if((item.width===undefined)!==(item.height===undefined)||item.width!==undefined&&(!num(item.width,3,mapSize,true)||!num(item.height,3,mapSize,true)))fail();
+        ids.add(item.x+','+item.y);return {x:item.x,y:item.y,axis:item.axis,...(item.width!==undefined?{width:item.width,height:item.height}:{})};
+      });
+      if(sim.state.interchanges.some(item=>interchangeGeometryReason(sim.state,item)))fail();
+    }
     const hadIncident = !!civic.incident;
     sim._undo = null; sim.recalculate();
     if (hadIncident && !sim.state.civic.incident) fail();

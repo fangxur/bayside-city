@@ -51,7 +51,7 @@ export function boulevardLanes(tile, layout) {
     lanesPerDirection,
     centers: Array.from({length:lanesPerDirection},(_,i)=>i+.5).map(n => middle - cross + side * (median / 2 + laneWidth * n)),
     median,
-    direction: layout.axis === 'ew' ? -side : side,
+    direction: layout.axis === 'ew' ? side : -side,
   };
 }
 

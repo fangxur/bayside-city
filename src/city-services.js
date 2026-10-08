@@ -1,3 +1,6 @@
+import {adjacentRoads,roadReach} from './road-network.js';
+import {vehicleNetwork,vehicleRoadPath} from './vehicle-routing.js';
+import {groundRoadAccess} from './interchanges.js';
 import {requiresRoad} from './building-access.js';
 import { buildingCells } from './building-footprint.js';
 import { maintenanceMultiplier } from './progression.js';
@@ -26,21 +29,8 @@ export function fireRange(state, station) {
   return FIRE_BUDGETS[state.civic.fireBudget].range + ((station.level || 1) - 1) * 3 + (hallLevel - 1) * 2;
 }
 
-function roadSearch(state, station, range) {
-  const distance = new Map(), previous = new Map(), queue = [];
-  for (const i of neighbors(state,station.x, station.y)) {
-    if (!state.tiles[i]?.road || !state.tiles[i].connected) continue;
-    distance.set(i, 0); queue.push(i);
-  }
-  for (let cursor = 0; cursor < queue.length; cursor++) {
-    const current = queue[cursor], tile = state.tiles[current], d = distance.get(current);
-    if (d >= range) continue;
-    for (const i of neighbors(state,tile.x, tile.y)) {
-      if (!state.tiles[i]?.road || !state.tiles[i].connected || distance.has(i)) continue;
-      distance.set(i, d + 1); previous.set(i, current); queue.push(i);
-    }
-  }
-  return { station, distance, previous };
+function roadSearch(state,station,range){
+  return {station,...roadReach(state,adjacentRoads(state,station),range)};
 }
 
 function searches(state) {
@@ -50,8 +40,8 @@ function searches(state) {
 function nearestRoad(state,target, search) {
   let best = null;
   for (const i of new Set(buildingCells(target).flatMap(c=>neighbors(state,c.x,c.y)))) {
-    const distance = search.distance.get(i);
-    if (distance !== undefined && (!best || distance < best.distance || (distance === best.distance && i < best.index))) best = { index: i, distance };
+    const distance = groundRoadAccess(state.tiles[i])?search.distance.get(i):undefined;
+    if (distance !== undefined && (!best || distance < best.distance || (distance === best.distance && i < best.index))) best = { index: i, distance, node:search.bestNodes.get(i) };
   }
   return best;
 }
@@ -105,9 +95,10 @@ export function planFireDrill(state) {
     if (response && (!best || response.road.distance > best.response.road.distance || (response.road.distance === best.response.road.distance && target.id < best.target.id))) best = { target, response };
   }
   if (!best) return { ready: false, reason: '消防站覆盖范围内没有可演练的已使用私人建筑；请接通道路或扩大消防覆盖' };
-  const path = [best.response.road.index]; let current = path[0];
-  while (best.response.search.previous.has(current)) { current = best.response.search.previous.get(current); path.push(current); }
-  return { ready: true, reason: '', target: best.target, station: best.response.search.station, path: path.reverse(), distance: best.response.road.distance };
+  const station=best.response.search.station;
+  const path=vehicleRoadPath(state,adjacentRoads(state,station),adjacentRoads(state,best.target),{from:station,to:best.target,network:vehicleNetwork(state)});
+  if(!path.length)return {ready:false,reason:'没有可按车道方向驶入目标的演练路线，请完善周边道路'};
+  return { ready: true, reason: '', target: best.target, station, path, distance: path.length-1 };
 }
 
 export function validateFireDrill(state, incident) {

@@ -69,7 +69,7 @@ function neighborhoodActivity(state,home,homes,seed){
 }
 
 const STORIES = {
-  disconnected: { title: '这条路走不通了', mood: 'upset', quotes: ['家门口明明有路，怎么出不了街区？接上外面的主路就好了。', '路在这里断了，邻居上班、商店进货都犯愁。'], suggestion: { label: '接通街区与西侧入口', tool: 'road', overlay: 'traffic' } },
+  disconnected: { title: '这条路走不通了', mood: 'upset', quotes: ['家门口明明有路，怎么出不了街区？接上外面的主路就好了。', '路在这里断了，邻居上班、商店进货都犯愁。'], suggestion: { label: '接通街区与对外入口', tool: 'road', overlay: 'traffic' } },
   power: { title: '街区需要电力', mood: 'upset', quotes: ['这一片还缺电，晚饭和店里的生意都受影响。先让灯亮起来吧。', '大家都在等供电恢复。电站没接上路，或容量不够，都得看看。'], suggestion: { label: '检查供电站与剩余容量', tool: 'power', overlay: 'power' } },
   water: { title: '水塔那边有消息吗', mood: 'upset', quotes: ['这一带供水不够，大家出门前都在问什么时候恢复。', '街区有水才住得安心。水塔的连接和容量都检查一下吧。'], suggestion: { label: '检查水塔与剩余容量', tool: 'water', overlay: 'water' } },
   pollution: { title: '想要更清新的空气', mood: 'upset', quotes: ['这附近的空气不太好，工厂能不能离住宅远一点？', '我喜欢这里的邻居，只是工业污染让人不太想开窗。'], suggestion: { label: '查看污染，调整工厂与住宅距离', overlay: 'pollution' } },

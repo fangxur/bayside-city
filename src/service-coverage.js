@@ -1,3 +1,4 @@
+import {policeCoverageCells,servedBusStops} from './network-services.js';
 import { DECORATIONS } from './decorations.js';
 import { COMMUNITY_BUILDINGS, communityService } from './community-buildings.js';
 import { LANDMARKS } from './landmarks.js';
@@ -6,10 +7,10 @@ import { civicBuildingReady, civicServiceReady, fireRange, fireStationCells } fr
 import {civicGardenGroups} from './city-layout.js';
 import {gridIndex} from './grid.js';
 import {businessKind} from './business-kinds.js';
-export const SERVICE_LABELS={spiritual:'精神慰藉',gothicCathedral:'精神慰藉',domedCathedral:'精神慰藉',chapel:'精神慰藉',buddhistTemple:'精神慰藉',taoistTemple:'精神慰藉',mosque:'精神慰藉',marina:'滨水休闲',districtOffice:'市政服务',grandStadium:'体育',grandGallery:'文化',shoppingComplex:'商业配套',shopping:'商业配套',entertainment:'休闲娱乐',operaStage:'戏曲娱乐',chessPavilion:'邻里休闲',hospital:'医疗',stadium:'体育',clinic:'医疗',fireStation:'消防',school:'教育',sportsHall:'体育',library:'文化',park:'休闲景观',plaza:'喷泉广场',cityHall:'市政服务',power:'电力',water:'供水'};
+export const SERVICE_LABELS={policeStation:'治安',busStop:'公交',spiritual:'精神慰藉',gothicCathedral:'精神慰藉',domedCathedral:'精神慰藉',chapel:'精神慰藉',buddhistTemple:'精神慰藉',taoistTemple:'精神慰藉',mosque:'精神慰藉',marina:'滨水休闲',districtOffice:'市政服务',grandStadium:'体育',grandGallery:'文化',shoppingComplex:'商业配套',shopping:'商业配套',entertainment:'休闲娱乐',operaStage:'戏曲娱乐',chessPavilion:'邻里休闲',hospital:'医疗',stadium:'体育',clinic:'医疗',fireStation:'消防',school:'教育',sportsHall:'体育',library:'文化',park:'休闲景观',plaza:'喷泉广场',cityHall:'市政服务',power:'电力',water:'供水'};
 export function serviceDefinition(state,b){
  if(DECORATIONS[b.type])return {radius:DECORATIONS[b.type].radius,label:'景观环境',garden:true};
- if(COMMUNITY_BUILDINGS[b.type])return {radius:communityService(b).radius,label:COMMUNITY_BUILDINGS[b.type].coverageLabel||SERVICE_LABELS[b.type]};
+ if(COMMUNITY_BUILDINGS[b.type])return {radius:communityService(b).radius,label:COMMUNITY_BUILDINGS[b.type].coverageLabel||SERVICE_LABELS[b.type],roads:!!COMMUNITY_BUILDINGS[b.type].roadService};
  const privateKind=businessKind(b.businessKind);
  if(privateKind?.service)return {radius:(privateKind.serviceRadius||4)+Math.max(0,(b.level||1)-1)*(privateKind.serviceRadiusGrowth||1),label:privateKind.serviceLabel||SERVICE_LABELS[privateKind.service],service:privateKind.service,staffed:true};
  if(['park','plaza'].includes(b.type))return {radius:gardenRadius(b),label:SERVICE_LABELS[b.type],garden:true};
@@ -20,14 +21,15 @@ export function serviceDefinition(state,b){
  return null;
 }
 export function calculateServiceCoverage(state){
+ const busStops=new Set(servedBusStops(state).map(b=>b.id));
  for(const t of state.tiles){t.services={};t.serviceLevels={};}
  for(const b of state.buildings){
   const def=serviceDefinition(state,b);b.coverageCells=[];b.coverageDescription='';
   if(!def)continue;
   b.coverageDescription=def.network?'连通道路网络，受总容量限制':def.roads?`沿道路 ${def.radius} 格`:`半径 ${def.radius} 格`;
   const ready=def.network?b.active&&b.connected&&b.powered&&utilityCapacity(b)>0:def.garden?b.active&&b.progress>=1:def.landmark?b.active&&b.connected&&b.progress>=1:civicServiceReady(state,b)&&(!def.staffed||(b.workers||0)>0);
-  if(!ready)continue;
-  if(def.roads)b.coverageCells=fireStationCells(state,b);
+  if(!ready||(b.type==='busStop'&&!busStops.has(b.id)))continue;
+  if(def.roads)b.coverageCells=b.type==='policeStation'?policeCoverageCells(state,b):fireStationCells(state,b);
   else b.coverageCells=state.tiles.filter(t=>{
    if(t.terrain!=='land')return false;
    if(def.network)return t.connected&&(b.type==='power'?t.powered:t.watered);
@@ -55,7 +57,7 @@ export function calculateServiceCoverage(state){
 function previewCoverage(state,b){
  const def=serviceDefinition(state,b);
  if(!def||def.network)return null;
- const cells=def.roads?fireStationCells(state,b):state.tiles.filter(t=>{
+ const cells=def.roads?(b.type==='policeStation'?policeCoverageCells(state,b):fireStationCells(state,b)):state.tiles.filter(t=>{
   if(t.terrain!=='land')return false;
   const distance=Math.hypot(t.x-b.x,t.y-b.y);
   return def.garden||def.landmark?distance<def.radius:distance<=def.radius;
