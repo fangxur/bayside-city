@@ -27,7 +27,7 @@ const server=createServer(async(req,res)=>{
   res.writeHead(200,{'Content-Type':type,'Cache-Control':'no-cache','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'});res.end(req.method==='HEAD'?undefined:content);
  }catch{res.writeHead(404);res.end('Not found');}
 });
-const tick=setInterval(()=>{try{store.tickDue();}catch(e){console.error('Cooperative simulation paused by storage error:',e.message);}},500);
+const tick=setInterval(()=>{store.tickDueAsync().catch(e=>console.error('Cooperative simulation paused by storage error:',e.message));},500);
 server.listen(port,host,()=>console.log(`湾畔市 — http://${host}:${port}`));
 server.on('error',e=>{console.error(e.message);clearInterval(tick);clearInterval(backups);store.close();process.exitCode=1;});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{clearInterval(tick);server.close(()=>{store.close();process.exit(0);});server.closeIdleConnections();});

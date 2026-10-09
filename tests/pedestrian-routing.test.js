@@ -66,7 +66,7 @@ test('sidewalks wrap around an actual street end without crossing the carriagewa
 
 test('bridge sidewalks stay at the outer edge and crossings never appear over water',()=>{
   const s=crossroads(2);for(let x=31;x<=33;x++)for(let y=30;y<=31;y++)Object.assign(s.tile(x,y),{terrain:'water',bridge:true});
-  const trip=pedestrianTrip(s.state,{x:30,y:29},{x:34,y:29});assert(trip);assert(trip.sidewalk.every(p=>p.y===29.588&&!p.crossing));assert(trip.sidewalk.some(p=>p.cell.x===32&&p.height===.193));
+  const trip=pedestrianTrip(s.state,{x:30,y:29},{x:34,y:29});assert(trip);assert(trip.sidewalk.every(p=>p.y>=29.588&&p.y<=29.66&&!p.crossing));assert(trip.sidewalk.some(p=>p.cell.x===32&&p.height>.7));
   assert(pedestrianCrossings(s.state).every(c=>c.cells.every(p=>s.tile(p.x,p.y).terrain==='land')));
 });
 

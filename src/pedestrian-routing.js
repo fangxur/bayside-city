@@ -1,7 +1,8 @@
+import {stoneBridgeLayout,stoneBridgeAt,roadSurfaceHeight} from './stone-bridges.js';
 import {buildingCells} from './building-footprint.js';
 import {detectIntersections} from './traffic-signals.js';
 import {wideRoadLayout} from './city-layout.js';
-import {groundRoadAccess,roadNodes,roadSteps,roadElevation} from './interchanges.js';
+import {groundRoadAccess,roadNodes,roadSteps} from './interchanges.js';
 import {gridIndex} from './grid.js';
 import {RouteHeap} from './vehicle-routing.js';
 
@@ -41,6 +42,7 @@ export function pedestrianNetwork(state){
   const roads=state.tiles.filter(t=>t.road);
   const signature=roads.map(t=>`${t.x},${t.y}:${t.road}:${t.terrain}:${!!t.bridge}:${t.interchange?`${t.interchange.x},${t.interchange.y},${t.interchange.axis},${t.interchange.core}`:''}`).join('|');
   const old=cache.get(state);if(old?.signature===signature)return old.network;
+  stoneBridgeLayout(state,true);
   const wide=wideRoadLayout(state.tiles),surfaces=new Map(),nodes=new Map(),edges=new Map(),boundaries=new Map(),vertices=new Map();
   for(const t of roads)for(const id of roadNodes(state,gridIndex(state,t.x,t.y)))surfaces.set(id,{id,t,neighbors:[]});
   const sameDeck=(a,b)=>a.t.interchange&&b.t.interchange&&a.id%3===b.id%3&&a.t.interchange.x===b.t.interchange.x&&a.t.interchange.y===b.t.interchange.y;
@@ -54,9 +56,13 @@ export function pedestrianNetwork(state){
   }
   const add=(id,x,y,s)=>{
     if(nodes.has(id))return id;
+    const bridge=stoneBridgeAt(state,x,y);
+    if(bridge){
+      if(bridge.axis==='ew'){if(y<bridge.min)y=bridge.min-.34;else if(y>bridge.max)y=bridge.max+.34;}
+      else {if(x<bridge.min)x=bridge.min-.34;else if(x>bridge.max)x=bridge.max+.34;}
+    }
     const mode=s.id%3,axis=mode===1?'ew':mode===2?'ns':wide.get(key(s.t))?.axis||((s.neighbors[1]||s.neighbors[3])?'ew':'ns');
-    const bridge=s.t.terrain==='water'||wide.get(key(s.t))?.overWater;
-    nodes.set(id,{x,y,cell:{x:s.t.x,y:s.t.y},axis,height:(bridge?.193:.079)+roadElevation(state,x,y,axis)});edges.set(id,[]);return id;
+    nodes.set(id,{x,y,cell:{x:s.t.x,y:s.t.y},axis,height:roadSurfaceHeight(state,x,y,axis)});edges.set(id,[]);return id;
   };
   const link=(a,b,crossing=null)=>{
     if(a===b)return;

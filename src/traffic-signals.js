@@ -1,4 +1,4 @@
-import {vehicleLanePose} from './vehicle-routing.js';
+import {vehicleLanePose,vehicleLanePlan} from './vehicle-routing.js';
 import {validRoadPath} from './interchanges.js';
 import { wideRoadLayout } from './city-layout.js';
 import {DEFAULT_MAP_SIZE,mapSize} from './grid.js';
@@ -111,11 +111,24 @@ export class TrafficController {
       car.zones = [];
       for (const event of car.events) {
         const last = car.zones.at(-1);
-        if (last?.id === event.signal.groupId) last.clear = event.clear;
-        else car.zones.push({ ...event, id: event.signal.groupId });
+        if (last?.id === event.signal.groupId&&event.center===last.endCenter+1){last.clear=event.clear;last.endCenter=event.center;}
+        else car.zones.push({ ...event, endCenter:event.center, id: event.signal.groupId });
+      }
+      if(!car.lanePlan||car.laneRoads!==this.wideRoads){car.lanePlan=vehicleLanePlan(points,this.wideRoads,car.zones,car.id);car.laneRoads=this.wideRoads;}
+      for(const zone of car.zones){
+        const approach=points[Math.max(0,zone.center-1)],layout=this.wideRoads.get(key(approach));
+        zone.multiLane=!!layout?.sharedLanes;
+        zone.corridor=[];
+        const end=Math.min(points.length-1,zone.clear),start=Math.max(0,zone.stop),steps=Math.ceil((end-start)/.14);
+        for(let i=0;i<=steps;i++)zone.corridor.push(vehicleLanePose(points,start+(end-start)*i/Math.max(1,steps),this.wideRoads,car.lanePlan));
       }
       next.set(input.id, car);
       if (old?.signature !== signature) newCars.push({ car, preferred: Number.isFinite(input.travel) ? ((input.travel % (points.length - 1)) + points.length - 1) % (points.length - 1) : 0 });
+      else if(old.laneRoads!==this.wideRoads){
+        // A road upgrade can merge two straight lanes into one. Recheck the
+        // retained positions against the new lanes before showing the cars.
+        car.visible=false;newCars.push({car,preferred:old.distance});
+      }
     }
     this._cars = next;
     // Retained vehicles keep their exact positions. New representatives may be
@@ -146,8 +159,44 @@ export class TrafficController {
     const car = this._cars.get(id);
     if (!car) return null;
     const pose = this._pose(car);
-    return { ...pose, lanePose:vehicleLanePose(car.points,car.distance,this.wideRoads), distance: car.reverse ? car.points.length - 1 - car.distance : car.distance,
+    return { ...pose, lanePose:vehicleLanePose(car.points,car.distance,this.wideRoads,car.lanePlan), distance: car.reverse ? car.points.length - 1 - car.distance : car.distance,
       visible: car.visible, waiting: car.waiting, reason: car.reason };
+  }
+
+  _lanePose(car,distance=car.distance){
+    const pose=this._pose(car,distance),lane=vehicleLanePose(car.points,distance,this.wideRoads,car.lanePlan);
+    return {...pose,x:lane.x,y:lane.y};
+  }
+
+  _zoneConflicts(car,event,owners){
+    for(const id of owners||[]){
+      if(id===car.id)continue;
+      const other=this._cars.get(id);
+      const zone=other?.zones.find(z=>z.id===event.id&&other.distance>=z.stop-EPS&&other.distance<z.clear-EPS);
+      if(!zone||!event.multiLane||!zone.multiLane)return true;
+      const samePoint=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y)<.04;
+      const straight=z=>z.corridor.every(p=>Math.abs((p.x-z.corridor[0].x)*z.dy-(p.y-z.corridor[0].y)*z.dx)<.04);
+      // Cars following the same straight lane use the normal following gap;
+      // a green light must not release just one car per complete crossing.
+      if(event.dx===zone.dx&&event.dy===zone.dy&&straight(event)&&straight(zone)&&
+        samePoint(event.corridor[0],zone.corridor[0])&&samePoint(event.corridor.at(-1),zone.corridor.at(-1)))continue;
+      // Permit parallel, disjoint movements; crossing/merging trajectories
+      // reserve the conflict area until the previous vehicle's rear clears.
+      const clearance=car.kind==='bus'||other.kind==='bus'?.24:.21;
+      if(event.corridor.some(a=>zone.corridor.some(b=>(a.x-b.x)**2+(a.y-b.y)**2<clearance**2)))return true;
+    }
+    return false;
+  }
+
+  _exitBlocked(car,event,snapshots){
+    if(event.clear>=car.points.length-1)return false;
+    const exit=this._lanePose(car,event.clear);
+    return snapshots.some(([other,pose])=>{
+      if(other===car||pose.dx!==exit.dx||pose.dy!==exit.dy)return false;
+      const along=(pose.x-exit.x)*exit.dx+(pose.y-exit.y)*exit.dy;
+      const across=(pose.x-exit.x)*exit.dy-(pose.y-exit.y)*exit.dx;
+      return Math.abs(across)<.20&&Math.abs(along)<minimumGap(car,other)+.08;
+    });
   }
 
   _occupants() {
@@ -165,19 +214,19 @@ export class TrafficController {
   }
 
   _trySpawn(car, distance = 0) {
-    const pose = this._pose(car, distance);
+    const pose = this._lanePose(car, distance);
     const owners = this._occupants();
     for (const event of car.zones) {
       if (distance <= event.stop + EPS || distance >= event.clear - EPS) continue;
-      if (event.signal[event.axis] !== 'green' || owners.get(event.id)?.size) return false;
+      if (event.signal[event.axis] !== 'green' || this._zoneConflicts(car,event,owners.get(event.id))) return false;
     }
     for (const other of this._cars.values()) {
       if (other === car || !other.visible) continue;
-      const otherPose = this._pose(other);
+      const otherPose = this._lanePose(other);
       if (pose.dx !== otherPose.dx || pose.dy !== otherPose.dy) continue;
       const along = (otherPose.x - pose.x) * pose.dx + (otherPose.y - pose.y) * pose.dy;
       const across = (otherPose.x - pose.x) * pose.dy - (otherPose.y - pose.y) * pose.dx;
-      if (Math.abs(across) < EPS && Math.abs(along) < minimumGap(car, other) - EPS) return false;
+      if (Math.abs(across) < .20 && Math.abs(along) < minimumGap(car, other) - EPS) return false;
     }
     car.distance = distance; car.visible = true; car.waiting = false; car.reason = null; car.cooldown = 0;
     return true;
@@ -194,12 +243,13 @@ export class TrafficController {
         const dx = b.x - a.x, dy = b.y - a.y;
         if (pose.dx !== dx || pose.dy !== dy) continue;
         const along = (pose.x - a.x) * dx + (pose.y - a.y) * dy;
-        const across = (pose.x - a.x) * dy - (pose.y - a.y) * dx;
+        const own=this._lanePose(car,i+clamp(along,0,1));
+        const across = (pose.x - own.x) * dy - (pose.y - own.y) * dx;
         // A queue just beyond this trip's destination still occupies its lane;
         // disappearing at the endpoint must not drive through the queue's tail.
         const endExtension = i === car.points.length - 2 ? lookahead : 0;
-        if (Math.abs(across) > EPS || along < -EPS || along > 1 + endExtension + EPS) continue;
-        const otherDistance = i + clamp(along, 0, 1);
+        if (Math.abs(across) >= .20 || along < -EPS || along > 1 + endExtension + EPS) continue;
+        const otherDistance = i + Math.min(along,1);
         if (otherDistance <= car.distance + EPS) continue;
         limit = Math.min(limit, otherDistance - minimumGap(car, other));
       }
@@ -207,11 +257,33 @@ export class TrafficController {
     return limit;
   }
 
+  _mergeBlocked(car,snapshots){
+    if(car.zones.some(zone=>car.distance>zone.stop&&car.distance<zone.clear))return false;
+    const pose=this._lanePose(car),ahead=this._lanePose(car,car.distance+.7);
+    if(pose.dx!==ahead.dx||pose.dy!==ahead.dy)return false;
+    const cross=(a,b)=>(a.x-b.x)*pose.dy-(a.y-b.y)*pose.dx;
+    if(Math.abs(cross(ahead,pose))<.01)return false;
+    // Yield before starting to overlap the adjacent lane. Looking ahead gives
+    // the through car room to pass instead of letting two side-by-side cars
+    // converge, or stopping both halfway through a lane change.
+    return snapshots.some(([other,otherPose])=>{
+      if(other===car||otherPose.dx!==pose.dx||otherPose.dy!==pose.dy)return false;
+      const along=(otherPose.x-pose.x)*pose.dx+(otherPose.y-pose.y)*pose.dy;
+      if(Math.abs(along)>=minimumGap(car,other)+.06)return false;
+      const otherAhead=this._lanePose(other,other.distance+.7);
+      if(otherAhead.dx!==pose.dx||otherAhead.dy!==pose.dy)return false;
+      const current=Math.abs(cross(otherPose,pose)),future=Math.abs(cross(otherAhead,ahead));
+      if(future>=.24||future>=current-.005)return false;
+      const otherChanging=Math.abs(cross(otherAhead,otherPose))>=.01;
+      return !otherChanging||along>.05||(along>=-.05&&String(other.id)<String(car.id));
+    });
+  }
+
   _substep(dt) {
     this.time += dt;
     this._refreshSignals();
     const occupied = this._occupants();
-    const snapshots = [...this._cars.values()].filter(car => car.visible).map(car => [car, this._pose(car)]);
+    const snapshots = [...this._cars.values()].filter(car => car.visible).map(car => [car, this._lanePose(car)]);
     for (const car of this._cars.values()) {
       if (!car.visible) continue;
       const pose = this._pose(car);
@@ -220,6 +292,7 @@ export class TrafficController {
       const speed = baseSpeed / (1 + (tile?.traffic || 0) / 180);
       const requested = car.distance + speed * dt;
       let target = Math.min(requested, this._leaderLimit(car, snapshots));
+      if(this._mergeBlocked(car,snapshots))target=car.distance;
       let reason = target < requested - EPS ? 'queue' : null;
       let waitingAt = null;
       for (const event of car.zones) {
@@ -227,7 +300,7 @@ export class TrafficController {
         // if the light turns yellow/red before its tail exits the intersection.
         if (car.distance > event.stop + EPS || target <= event.stop + EPS) continue;
         const owners = occupied.get(event.id);
-        if (event.signal[event.axis] !== 'green' || (owners && [...owners].some(id => id !== car.id))) {
+        if (event.signal[event.axis] !== 'green' || this._zoneConflicts(car,event,owners) || this._exitBlocked(car,event,snapshots)) {
           if (target > event.stop) target = Math.max(car.distance, event.stop);
           reason = event.signal[event.axis] !== 'green' ? 'signal' : 'queue';
           waitingAt = event.signal.id;

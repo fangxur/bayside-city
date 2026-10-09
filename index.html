@@ -220,7 +220,7 @@
   <dialog id="budget-dialog">
     <div class="dialog-heading"><div><span class="eyebrow">CITY BUDGET</span><h2>城市财政</h2></div><button class="plain-icon" data-close-dialog aria-label="关闭财政"><span data-icon="close"></span></button></div>
     <div id="budget-summary"></div>
-    <label class="tax-label" for="tax-rate"><span>城市税率</span><output id="tax-value">9%</output></label><input id="tax-rate" type="range" min="6" max="15" step="1" value="9">
+    <label class="tax-label" for="tax-rate"><span>城市税率</span><output id="tax-value" for="tax-rate">9%</output></label><input id="tax-rate" type="range" min="6" max="15" step="1" value="9" aria-describedby="tax-status"><p class="muted" id="tax-status" role="status"></p>
     <p class="muted">税率同时作用于居民工资税和企业经营税；较高税率会增加收入，也会降低迁入与投资意愿。税收、公共工资和维护费每个模拟月结算一次，暂停时不结算。</p>
     <div id="loan-info"></div><button class="secondary-button" id="take-loan">申请一次应急贷款 · 6,000</button>
   </dialog>
@@ -287,6 +287,14 @@
   </dialog>
   <dialog id="confirm-dialog"><h2 id="confirm-title">确认切换城市？</h2><p id="confirm-description"></p><div class="dialog-footer"><button class="secondary-button" id="confirm-cancel">取消</button><button class="primary-button" id="confirm-ok">继续</button></div></dialog>
   <dialog id="milestone-dialog" aria-labelledby="milestone-title" aria-describedby="milestone-description"></dialog>
+  <dialog id="bankruptcy-dialog" aria-labelledby="bankruptcy-title" aria-describedby="bankruptcy-description">
+    <span class="eyebrow">CITY BANKRUPTCY · 本局结束</span>
+    <h2 id="bankruptcy-title">城市破产</h2>
+    <p id="bankruptcy-description">应急贷款机会已经用完，城市资金耗尽。本局游戏失败，时间与财政结算已停止。</p>
+    <div class="bankruptcy-finances"><div><span>城市资金</span><strong id="bankruptcy-money"></strong></div><div><span>尚欠贷款</span><strong id="bankruptcy-debt"></strong></div></div>
+    <p class="muted" id="bankruptcy-recovery">读取破产前的存档，或重新开始一座城市。应急贷款即使还清，也不能再次申请。</p>
+    <div class="dialog-footer"><button class="secondary-button" id="bankruptcy-load">读取存档</button><button class="primary-button" id="bankruptcy-restart">重新开始</button></div>
+  </dialog>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

@@ -32,19 +32,23 @@ export function wideRoadLayout(tiles) {
     info.bridge = span.some(t => t.bridge);
     info.overWater = span.some(t => t.terrain === 'water');
     info.fourLane = max - min === 1 && info.level >= 2;
+    info.sharedLanes = max - min >= 2 || (max > min && info.level >= 2);
     info.junction = roads.has(at(min - 1)) || roads.has(at(max + 1));
   }
   return layout;
 }
 
-export function boulevardLanes(tile, layout) {
-  if (!layout?.fourLane) return null;
+export function boulevardLanes(tile, layout, direction) {
+  if (!layout?.fourLane && !layout?.sharedLanes) return null;
   const cross = layout.axis === 'ew' ? tile.y : tile.x;
   const middle = (layout.min + layout.max) / 2;
-  const side = cross < middle ? -1 : 1;
+  const side = direction ? (layout.axis === 'ew' ? direction : -direction) : cross < middle ? -1 : 1;
   const median = layout.level >= 4 ? .14 : layout.level >= 3 ? .10 : 0;
-  const lanesPerDirection = layout.level >= 5 ? 3 : 2;
-  const laneWidth = (1.72 - median) / (lanesPerDirection * 2);
+  const width = layout.max - layout.min + 1;
+  // Keep the established two-tile boulevards; wider roads use their full
+  // carriageway. Six/seven tiles have four lanes in each direction.
+  const lanesPerDirection = width === 2 ? (layout.level >= 5 ? 3 : 2) : Math.floor(width / 2) + 1;
+  const laneWidth = (width - .28 - median) / (lanesPerDirection * 2);
   return {
     divider: middle - cross + side * (median / 2 + laneWidth),
     dividers: Array.from({length:lanesPerDirection-1},(_,i)=>middle-cross+side*(median/2+laneWidth*(i+1))),
@@ -53,6 +57,13 @@ export function boulevardLanes(tile, layout) {
     median,
     direction: layout.axis === 'ew' ? side : -side,
   };
+}
+
+// Lane indices run from the median (driver's left) toward the outside curb.
+export function laneMovements(count,index){
+  if(count===2)return index===0?['straight','left']:['straight','right'];
+  if(count>=3)return index===0?['left']:index===count-1?['right']:['straight'];
+  return ['straight','left','right'];
 }
 
 export function civicGardenGroups(buildings) {

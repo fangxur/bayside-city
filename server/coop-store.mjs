@@ -5,14 +5,22 @@ import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {mkdirSync} from 'node:fs';
 import path from 'node:path';
 import {CitySimulation,TOOLS} from '../src/simulation.js';
+import {isBankrupt,BANKRUPTCY_MESSAGE} from '../src/city-bankruptcy.js';
 import {newCityGoal,validCityGoal} from '../src/city-goals.js';
 import {COOP_METHODS,OWNER_METHODS,COOP_FORMAT,COOP_ENGINE} from '../src/coop-protocol.js';
 import {businessKind} from '../src/business-kinds.js';
 import {civicGardenGroups} from '../src/city-layout.js';
 import {DEFAULT_MAP_SIZE,MAX_MAP_SIZE,gridIndex,inGrid,validMapSize} from '../src/grid.js';
+import {SimulationJobs} from './simulation-jobs.mjs';
+import {compactFamousSculpturePlots} from '../src/building-footprint.js';
 const json=JSON.stringify,parse=JSON.parse,hash=s=>createHash('sha256').update(s).digest('hex');
 const encodeState=state=>gzipSync(Buffer.from(json(state))).toString('base64');
-const decodeState=text=>text.startsWith('{')?parse(text):parse(gunzipSync(Buffer.from(text,'base64')).toString());
+const decodeState=text=>{
+ const state=text.startsWith('{')?parse(text):parse(gunzipSync(Buffer.from(text,'base64')).toString());
+ // Existing server cities and historic snapshots bypass deserialize; compact those too.
+ if(compactFamousSculpturePlots(state)){const sim=hydrate(state);sim.recalculate();return sim.state;}
+ return state;
+};
 const fail=(message,code='INVALID',status=400)=>{throw Object.assign(new Error(message),{code,status});};
 const okText=(s,max=24)=>typeof s==='string'&&s.trim().length>0&&s.length<=max;
 const point=p=>p&&Number.isInteger(p.x)&&Number.isInteger(p.y)&&p.x>=0&&p.x<MAX_MAP_SIZE&&p.y>=0&&p.y<MAX_MAP_SIZE;
@@ -61,7 +69,8 @@ function validate(method,a){
 }
 const methodLabels={build:'建设',rotateBuilding:'旋转建筑',setBuildingActive:'调整设施',upgradeAllRoads:'升级全部道路',undo:'撤销建设',setTax:'调整税率',takeLoan:'申请贷款',setCityIdentity:'修改城市档案',setFireBudget:'调整消防预算',startFireDrill:'消防演练',resolveCityEvent:'支持居民活动',claimFestivalPoints:'领取节庆积分',redeemFestivalReward:'调整节庆装饰',enterDragonRace:'龙舟竞猜',setClock:'调整模拟速度',saveSnapshot:'纪念存档',restoreSnapshot:'恢复城市'};
 export class CoopStore{
- constructor(file,{now=()=>Date.now(),beforeCommit=null}={}){
+ constructor(file,{now=()=>Date.now(),beforeCommit=null,jobs=null}={}){
+  this.jobs=jobs;this.commandQueues=new Map();this.pendingTicks=new Map();this.renderPlans=new Map();this.closed=false;
   if(file!==':memory:')mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
   this.file=file;this.now=now;this.beforeCommit=beforeCommit;
   this.db=new DatabaseSync(file);this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
@@ -150,8 +159,8 @@ export class CoopStore{
   const m=this.member(id,actor.id);const time=this.now();this.db.prepare('UPDATE members SET seen=? WHERE city=? AND actor=?').run(time,id,actor.id);
   const c=this.city(id),last=this.db.prepare('SELECT actor,reversible FROM revisions WHERE city=? AND revision=?').get(id,c.revision);
   return {cityId:id,epoch:c.epoch,revision:c.revision,checksum:c.checksum,role:m.role,paused:!!c.paused,speed:c.speed,updated:c.updated,
-   canUndo:!!last?.reversible&&last.actor===actor.id,
-   ...(Number(since)===c.revision?{}:{state:decodeState(c.state)}),
+   canUndo:!!last?.reversible&&last.actor===actor.id&&!isBankrupt(decodeState(c.state)),
+   ...(Number(since)===c.revision?{}:{state:decodeState(c.state),...(this.renderPlans.get(id)?.revision===c.revision?{renderPlans:this.renderPlans.get(id).plans}:{})}),
    members:this.db.prepare('SELECT u.id,u.name,m.role,m.seen FROM members m JOIN users u ON u.id=m.actor WHERE m.city=?').all(id).map(u=>({...u,online:time-u.seen<10000})),
   };
  }
@@ -161,7 +170,7 @@ export class CoopStore{
  snapshots(id,actor){this.member(id,actor.id);return this.db.prepare('SELECT id,name,kind,epoch,revision,time FROM snapshots WHERE city=? ORDER BY time DESC').all(id);}
  getSnapshot(id,actor,snapshotId){this.member(id,actor.id);const row=this.db.prepare('SELECT * FROM snapshots WHERE city=? AND id=?').get(id,snapshotId);if(!row||hash(row.state)!==row.checksum)fail('存档不存在或已损坏');return row;}
  exportSnapshot(id,actor,snapshotId){const c=snapshotId?this.getSnapshot(id,actor,snapshotId):(this.member(id,actor.id),this.city(id));return hydrate(decodeState(c.state)).serialize();}
- command(id,actor,cmd){
+ command(id,actor,cmd,prepared=null){
   if(!cmd||!okText(cmd.commandId,80)||!integer(cmd.epoch)||!integer(cmd.baseRevision))fail('操作标识无效');validate(cmd.method,cmd.args);
   return this.transaction(()=>{
    const member=this.member(id,actor.id),c=this.city(id),requestHash=hash(json(cmd));
@@ -170,10 +179,12 @@ export class CoopStore{
    const remember=result=>{this.db.prepare('INSERT INTO commands VALUES(?,?,?,?,?,?)').run(id,cmd.epoch,actor.id,cmd.commandId,requestHash,json(result));return result;};
    const reject=(message,code='TARGET_CHANGED')=>remember({ok:false,message,code,revision:c.revision,epoch:c.epoch});
    if(c.epoch!==cmd.epoch)return reject('城市已恢复到另一份存档，请同步后重新操作','CITY_RESTORED');
+   if(prepared&&(prepared.revision!==c.revision||prepared.checksum!==c.checksum))return reject('城市进度在计算期间已变化，请同步后重试','STALE');
    if(OWNER_METHODS.includes(cmd.method)&&member.role!=='owner')return reject('这项全城操作需要房主进行','FORBIDDEN');
    const base=this.db.prepare('SELECT state FROM revisions WHERE city=? AND revision=? AND epoch=?').get(id,cmd.baseRevision,c.epoch);
    if(!base)return reject('预览已过期，请同步城市后重试','STALE');
    const sim=hydrate(decodeState(c.state)),before=structuredClone(sim.state),baseState=decodeState(base.state),baseSim=hydrate(baseState),[method,args]=[cmd.method,cmd.args];
+   if(isBankrupt(sim.state)&&!['restoreSnapshot','saveSnapshot','setCityIdentity','setClock'].includes(method))return reject(BANKRUPTCY_MESSAGE,'BANKRUPT');
    let beforeOffer,offer,cells=[];
    try{
     beforeOffer=plan(baseSim,method,args);offer=plan(sim,method,args);
@@ -188,14 +199,17 @@ export class CoopStore{
     const last=this.db.prepare('SELECT * FROM revisions WHERE city=? AND revision=?').get(id,c.revision),prior=this.db.prepare('SELECT state FROM revisions WHERE city=? AND revision=? AND epoch=?').get(id,c.revision-1,c.epoch);
     if(!last?.reversible||last.actor!==actor.id||!prior)return reject('之后已有其他建设或城市进展，不能直接撤销');
     sim.state=decodeState(prior.state);result={ok:true,message:'已撤销自己的最近一次建设'};
-   }else if(method==='setClock'){paused=args[0].paused?1:0;speed=args[0].speed;result={ok:true,message:paused?'城市已暂停':'城市已继续 · '+speed+' 倍速'};}
+   }else if(method==='setClock'){if(isBankrupt(sim.state)&&!args[0].paused)return reject(BANKRUPTCY_MESSAGE);paused=args[0].paused?1:0;speed=args[0].speed;result={ok:true,message:paused?'城市已暂停':'城市已继续 · '+speed+' 倍速'};}
    else if(method==='saveSnapshot'){
     if(this.db.prepare("SELECT count(*) AS n FROM snapshots WHERE city=? AND kind='manual'").get(id).n>=50)return reject('纪念存档已达 50 份，请先导出保留','LIMIT');
     result={ok:true,message:'纪念存档已保存',snapshotId:this.snapshot(c,args[0],'manual')};
    }else if(method==='restoreSnapshot'){
     const snapshot=this.getSnapshot(id,actor,args[0]);this.snapshot(c,'恢复前 · '+new Date(this.now()).toLocaleString('zh-CN'),'before-restore');sim.state=decodeState(snapshot.state);epoch++;paused=1;result={ok:true,message:'已恢复城市，恢复前的进度已备份；城市已暂停'};
-   }else{try{result=sim[method](...args);}catch{return reject('操作参数无效','INVALID');}}
+   }else if(prepared){sim.state=prepared.state;result=prepared.result;}
+   else{try{result=sim[method](...args);}catch{return reject('操作参数无效','INVALID');}}
    if(!result?.ok)return reject(result?.message||'无法完成操作','INVALID');
+   if(isBankrupt(sim.state)&&!isBankrupt(before))this.snapshot(c,'破产前的城市','before-bankruptcy');
+   if(isBankrupt(sim.state))paused=1;
    const revision=c.revision+1,state=encodeState(sim.state),checksum=hash(state),time=this.now();
    this.db.prepare('UPDATE cities SET epoch=?,revision=?,state=?,checksum=?,paused=?,speed=?,updated=?,next_tick=? WHERE id=?').run(epoch,revision,state,checksum,paused,speed,time,method==='setClock'||method==='restoreSnapshot'?time+3000/speed:c.next_tick,id);
    const reversible=['build','rotateBuilding','upgradeAllRoads'].includes(method);
@@ -205,6 +219,29 @@ export class CoopStore{
    this.maintenance(this.city(id));
    return remember({...result,revision,epoch});
   });
+ }
+ commandAsync(id,actor,cmd){
+  const previous=this.commandQueues.get(id)||Promise.resolve();
+  const task=previous.catch(()=>{}).then(async()=>{
+   if(!cmd||!okText(cmd.commandId,80)||!integer(cmd.epoch)||!integer(cmd.baseRevision))fail('操作标识无效');validate(cmd.method,cmd.args);
+   if(['undo','setClock','saveSnapshot','restoreSnapshot'].includes(cmd.method))return this.command(id,actor,cmd);
+   for(let attempt=0;attempt<3;attempt++){
+    const member=this.member(id,actor.id),c=this.city(id);
+    const known=this.db.prepare('SELECT 1 FROM commands WHERE city=? AND epoch=? AND actor=? AND id=?').get(id,cmd.epoch,actor.id,cmd.commandId);
+    if(known||c.epoch!==cmd.epoch||(OWNER_METHODS.includes(cmd.method)&&member.role!=='owner'))return this.command(id,actor,cmd);
+    this.jobs??=new SimulationJobs();
+    const computed=await this.jobs.run('command',{cityId:id,state:decodeState(c.state),method:cmd.method,args:cmd.args});
+    if(this.closed)throw Error('City store closed');
+    const current=this.city(id);
+    if(current.revision!==c.revision||current.checksum!==c.checksum)continue;
+    const result=this.command(id,actor,cmd,{...computed,revision:c.revision,checksum:c.checksum});
+    if(result.ok)this.renderPlans.set(id,{revision:result.revision,plans:computed.renderPlans});
+    return result;
+   }
+   fail('城市进度更新较频繁，请同步后重试','STALE',409);
+  });
+  this.commandQueues.set(id,task);
+  return task.finally(()=>{if(this.commandQueues.get(id)===task)this.commandQueues.delete(id);});
  }
  maintenance(c){
   this.db.prepare('DELETE FROM revisions WHERE city=? AND revision<?').run(c.id,c.revision-512);
@@ -221,13 +258,51 @@ export class CoopStore{
    if(!online){this.db.prepare('UPDATE cities SET next_tick=? WHERE id=?').run(this.now()+3000/c.speed,id);return;}
    const sim=hydrate(decodeState(c.state)),milestones={...sim.state.milestones};sim.tick();
    const state=encodeState(sim.state),revision=c.revision+1,time=this.now();
-   this.db.prepare('UPDATE cities SET revision=?,state=?,checksum=?,updated=?,next_tick=? WHERE id=?').run(revision,state,hash(state),time,time+3000/c.speed,id);
+   this.db.prepare('UPDATE cities SET revision=?,state=?,checksum=?,updated=?,next_tick=?,paused=? WHERE id=?').run(revision,state,hash(state),time,time+3000/c.speed,isBankrupt(sim.state)?1:0,id);
+   if(isBankrupt(sim.state)&&!isBankrupt(decodeState(c.state)))this.snapshot(c,'破产前的城市','before-bankruptcy');
    this.db.prepare('INSERT INTO revisions VALUES(?,?,?,?,?,?)').run(id,revision,c.epoch,state,'system',0);
    const reached=Object.keys(milestones).filter(k=>!milestones[k]&&sim.state.milestones[k]);
    if(reached.length){this.log(id,revision,c.epoch,{id:'system',name:'城市'},'milestone','达成新的人口里程碑 · '+sim.state.stats.population+' 人',0,[],[]);this.snapshot(this.city(id),'成长纪念 · '+sim.state.stats.population+' 人','milestone');}
    this.maintenance(this.city(id));
   });
  }
+ async tickDueAsync(){
+  if(this.closed)return;
+  const due=this.db.prepare('SELECT id FROM cities WHERE paused=0 AND next_tick<=?').all(this.now()),tasks=[];
+  for(const {id} of due){
+   if(this.commandQueues.has(id)||this.pendingTicks.has(id))continue;
+   const task=this.advanceCityAsync(id).finally(()=>this.pendingTicks.delete(id));
+   this.pendingTicks.set(id,task);tasks.push(task);
+  }
+  // Settle all cities so a failure cannot leave another rejection unhandled.
+  const results=await Promise.allSettled(tasks);
+  const failed=results.find(result=>result.status==='rejected'&&!result.reason.cancelled);if(failed)throw failed.reason;
+ }
+ async advanceCityAsync(id){
+  const c=this.city(id);if(c.paused||c.next_tick>this.now())return;
+  if(!this.db.prepare('SELECT 1 FROM members WHERE city=? AND seen>?').get(id,this.now()-10000)){
+   this.db.prepare('UPDATE cities SET next_tick=? WHERE id=? AND revision=?').run(this.now()+3000/c.speed,id,c.revision);return;
+  }
+  const input=decodeState(c.state),milestones={...input.milestones};this.jobs??=new SimulationJobs();
+  const computed=await this.jobs.run('tick',{cityId:id,state:input});
+  if(this.closed||this.commandQueues.has(id))return;
+  const revision=this.transaction(()=>{
+   const current=this.db.prepare('SELECT * FROM cities WHERE id=?').get(id);
+   if(!current||current.revision!==c.revision||current.checksum!==c.checksum||current.paused||current.next_tick!==c.next_tick)return;
+   const time=this.now();
+   if(!this.db.prepare('SELECT 1 FROM members WHERE city=? AND seen>?').get(id,time-10000)){
+    this.db.prepare('UPDATE cities SET next_tick=? WHERE id=?').run(time+3000/current.speed,id);return;
+   }
+   const state=encodeState(computed.state),revision=c.revision+1;
+   this.db.prepare('UPDATE cities SET revision=?,state=?,checksum=?,updated=?,next_tick=?,paused=? WHERE id=?').run(revision,state,hash(state),time,time+3000/c.speed,isBankrupt(computed.state)?1:0,id);
+   if(isBankrupt(computed.state)&&!isBankrupt(input))this.snapshot(c,'破产前的城市','before-bankruptcy');
+   this.db.prepare('INSERT INTO revisions VALUES(?,?,?,?,?,?)').run(id,revision,c.epoch,state,'system',0);
+   const reached=Object.keys(milestones).filter(k=>!milestones[k]&&computed.state.milestones[k]);
+   if(reached.length){this.log(id,revision,c.epoch,{id:'system',name:'城市'},'milestone','达成新的人口里程碑 · '+computed.state.stats.population+' 人',0,[],[]);this.snapshot(this.city(id),'成长纪念 · '+computed.state.stats.population+' 人','milestone');}
+   this.maintenance(this.city(id));return revision;
+  });
+  if(revision!==undefined)this.renderPlans.set(id,{revision,plans:computed.renderPlans});
+ }
  async backupTo(file){await backup(this.db,file);}
- close(){this.db.close();}
+ close(){this.closed=true;this.jobs?.close();this.db.close();}
 }

@@ -1,4 +1,5 @@
 import {RouteHeap as Heap,vehicleNetwork,vehicleRoadPath} from './vehicle-routing.js';
+import {isBankrupt,latchBankruptcy,BANKRUPTCY_MESSAGE} from './city-bankruptcy.js';
 import {roadPath} from './road-network.js';
 import {INTERCHANGE_MAINTENANCE,interchangeOffer,interchangeBounds,interchangeAt,interchangeCells,interchangeGeometryReason,refreshInterchanges,groundRoadAccess,roadNodes,roadSteps,roadIndex} from './interchanges.js';
 import {busRoutes,servedBusStops,busCommuteAvailable,policeCoverageCells} from './network-services.js';
@@ -14,7 +15,7 @@ import {validateTerrainDraft} from './terrain-draft.js';
 import { buildingStyle } from './building-styles.js';
 import { calculateDemand, zoningReadiness } from './city-demand.js';
 import { calculateServiceCoverage, SERVICE_LABELS } from './service-coverage.js';
-import { buildingCells, footprintSize, newBuildingFootprint } from './building-footprint.js';
+import { buildingCells, footprintSize, newBuildingFootprint, compactFamousSculpturePlots } from './building-footprint.js';
 import { COMMUNITY_BUILDINGS, communityService, isCommunityBusiness } from './community-buildings.js';
 import { LANDMARKS,MAX_LANDMARK_LEVEL,LANDMARK_LEVEL_NAMES,landmarkHonor } from './landmarks.js';
 import { getCitizenStory, eventTitle } from './city-life.js';
@@ -90,7 +91,7 @@ export class CitySimulation {
       taxRate: 9, tiles: [], buildings: [], nextId: 1, districtName: terrainPreset==='bayside'?'湾畔市':TERRAIN_PRESETS[terrainPreset].name+'新城', mayorName: '', cityGoal:newCityGoal(cityGoal),
       interchanges:[],
       milestones: { named: false, bridge: false, density: false, landmark: false, completed: false, metropolis: false, capital: false, regional:false, mature:false, civic:false, global:false }, roadLevelUnlocked:1,
-      loan: { taken: false, remaining: 0, grace: 0, monthsPaid: 0 }, profitableMonths: 0,
+      loan: { taken: false, remaining: 0, grace: 0, monthsPaid: 0 }, bankruptcy:null, profitableMonths: 0,
       cityLife: { lastEventMonth: 0, activeEvent: null },
       cityIncidents:{active:[],history:[]},
       festivalGames:newFestivalGames(),marinaLife:newMarinaLife(),
@@ -213,6 +214,7 @@ export class CitySimulation {
   }
 
   preview(tool, inputCells, options = {}) {
+    if(isBankrupt(this.state))return {valid:false,cost:0,cells:[],affected:0,reason:BANKRUPTCY_MESSAGE};
     const kind=businessKind(tool);
     if(kind) return this.preview(kind.zone,inputCells,{...options,businessKind:tool});
     if (tool === 'move') return options.roadSource
@@ -324,6 +326,7 @@ export class CitySimulation {
   }
 
   build(tool, cells, options = {}) {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const kind=businessKind(tool);
     if(kind) return this.build(kind.zone,cells,{...options,businessKind:tool});
     if (tool === 'move') return options.roadSource
@@ -359,6 +362,7 @@ export class CitySimulation {
   }
 
   previewUpgradeAllRoads(){
+    if(isBankrupt(this.state))return {valid:false,cost:0,cells:[],affected:0,reason:BANKRUPTCY_MESSAGE};
     let targetLevel=1;
     while(roadUpgradeOffer({road:targetLevel},this.state).allowed)targetLevel++;
     const cells=[];let cost=0,maintenanceIncrease=0;
@@ -373,6 +377,7 @@ export class CitySimulation {
     return {valid:!reason,reason,cost,cells,targetLevel,name:ROAD_TIERS[targetLevel].name,maintenanceIncrease:round(maintenanceIncrease)};
   }
   upgradeAllRoads(){
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const offer=this.previewUpgradeAllRoads();
     if(!offer.valid)return {ok:false,message:offer.reason,cost:offer.cost};
     this._undo={tick:this.state.tick,state:clone(this.state)};
@@ -383,6 +388,7 @@ export class CitySimulation {
   }
 
   previewMove(buildingId, destination) {
+    if(isBankrupt(this.state))return {valid:false,cost:0,cells:[],affected:0,reason:BANKRUPTCY_MESSAGE};
     const invalid = (reason, cells = []) => ({ valid: false, cost: 0, cells, reason, affected: 0 });
     const b = this.state.buildings.find(b => b.id === buildingId);
     if (!b) return invalid('请先选择要移动的建筑');
@@ -405,6 +411,7 @@ export class CitySimulation {
   }
 
   moveBuilding(buildingId, destination) {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const p = this.previewMove(buildingId, destination);
     if (!p.valid) return { ok: false, message: p.reason, cost: 0 };
     if (p.unchanged) return {ok:true,cost:0,changed:false,message:'建筑已放回原位'};
@@ -425,6 +432,7 @@ export class CitySimulation {
   }
 
   previewMoveRoad(source, destination) {
+    if(isBankrupt(this.state))return {valid:false,cost:0,cells:[],affected:0,reason:BANKRUPTCY_MESSAGE};
     const invalid = (reason, cells = []) => ({ valid: false, cost: 0, cells, reason, affected: 0 });
     if (!source || !this._inBounds(source.x, source.y)) return invalid('请先选择要移动的道路');
     const from = this.tile(source.x, source.y);
@@ -444,6 +452,7 @@ export class CitySimulation {
   }
 
   moveRoad(source, destination) {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const p = this.previewMoveRoad(source, destination);
     if (!p.valid) return { ok: false, message: p.reason, cost: 0 };
     this._undo = { tick: this.state.tick, state: clone(this.state) };
@@ -456,6 +465,7 @@ export class CitySimulation {
   }
 
   undo() {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     if (!this._undo || this._undo.tick !== this.state.tick) return { ok: false, message: '只能撤销尚未推进时间的最近一次建设' };
     this.state = this._undo.state; this._undo = null; this.recalculate();
     return { ok: true, message: '已撤销最近一次建设，资金已恢复' };
@@ -777,7 +787,9 @@ export class CitySimulation {
     const blockedZone=tiles.find(t=>t.zone&&t.buildingId===null&&s.stats.demand[t.zone]>=12&&!t.connected);
     if(blockedZone)alerts.push({text:'已规划分区缺少连通道路，点击定位后接通入口路网',severity:'warning',x:blockedZone.x,y:blockedZone.y});
     if (s.stats.traffic < 65) alerts.push({ text: unlockedRoadLevel(s)>1?'部分道路拥堵，增加连接或升级道路':'部分道路拥堵，请增加平行道路；人口达到 1,000 后可升级道路', severity: 'warning' });
-    if (s.stats.balance < 0) alerts.push({ text: s.money > 0 ? `每月赤字 ¥${-s.stats.balance}，资金约可支撑 ${Math.floor(s.money / -s.stats.balance)} 个月` : '资金已透支；可调整税率、暂停设施或申请应急贷款', severity: s.money < 3000 ? 'danger' : 'info' });
+    if(isBankrupt(s))alerts.push({text:BANKRUPTCY_MESSAGE,severity:'danger'});
+    else if(s.money<=0)alerts.push({text:'资金已耗尽；尚有一次 ¥6,000 应急贷款机会，请尽快到城市财政申请',severity:'danger'});
+    else if(s.stats.balance<0)alerts.push({text:`每月赤字 ¥${-s.stats.balance}，资金约可支撑 ${Math.floor(s.money/-s.stats.balance)} 个月${s.loan.taken?'；应急贷款已用完，资金耗尽将破产':'；低于 ¥3,000 可申请一次应急贷款'}`,severity:s.money<3000?'danger':'info'});
     if (population >= 100) s.milestones.named = true;
     if (population >= 500 && employmentRate >= 65) s.milestones.bridge = true;
     if (population >= 1000 && s.milestones.bridge && cityHallRequirement(buildings).met) s.milestones.density = true;
@@ -790,6 +802,7 @@ export class CitySimulation {
     }
     refreshMarinaLife(s);
     this._refreshDrillReadiness();
+    if(latchBankruptcy(s))this._undo=null;
     return s.stats;
   }
 
@@ -806,7 +819,9 @@ export class CitySimulation {
   }
 
   tick() {
-    const s = this.state; this._undo = null; s.tick++;
+    const s = this.state;
+    if(latchBankruptcy(s)){this._undo=null;return s.stats;}
+    this._undo = null; s.tick++;
     this.recalculate();
     // Projects appear only beside connected roads with available utility capacity.
     let started = 0;
@@ -862,12 +877,14 @@ export class CitySimulation {
   }
 
   setTax(rate) {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const n = Number(rate); if (!Number.isFinite(n)) return { ok: false, message: '税率无效' };
     this.state.taxRate = Math.round(clamp(n, 6, 15)); this._undo = null; this.recalculate();
     return { ok: true, message: `税率已调整为 ${this.state.taxRate}%` };
   }
 
   rotateBuilding(id,direction=1){
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const b=this.state.buildings.find(b=>b.id===Number(id));
     if(!b||![1,-1].includes(direction))return {ok:false,message:'请先选择要旋转的建筑'};
     this._undo={tick:this.state.tick,state:clone(this.state)};
@@ -877,6 +894,7 @@ export class CitySimulation {
   }
 
   setBuildingActive(id, active) {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const b = this.state.buildings.find(b => b.id === Number(id));
     if (!b || !PUBLIC.includes(b.type)) return { ok: false, message: '只能暂停市政设施' };
     b.active = !!active; this._undo = null; this.recalculate();
@@ -901,6 +919,7 @@ export class CitySimulation {
   }
 
   takeLoan() {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     if (this.state.loan.taken) return { ok: false, message: '应急贷款只能申请一次' };
     if (this.state.money >= 3000) return { ok: false, message: '城市资金低于 ¥3,000 时开放应急贷款' };
     this.state.loan = { taken: true, remaining: 7200, grace: 3, monthsPaid: 0 };
@@ -908,16 +927,18 @@ export class CitySimulation {
     return { ok: true, message: '已收到 ¥6,000；宽限 3 个月后每月还款 ¥300，共 24 期' };
   }
 
-  claimFestivalPoints(){const result=claimFestivalPoints(this.state);if(result.ok)this._undo=null;return result;}
-  redeemFestivalReward(id){const result=redeemFestivalReward(this.state,id);if(result.ok)this._undo=null;return result;}
+  claimFestivalPoints(){if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};const result=claimFestivalPoints(this.state);if(result.ok)this._undo=null;return result;}
+  redeemFestivalReward(id){if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};const result=redeemFestivalReward(this.state,id);if(result.ok)this._undo=null;return result;}
 
   enterDragonRace(team,stake){
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const result=enterDragonRace(this.state,team,stake);
-    if(result.ok)this._undo=null;
+    if(result.ok){this._undo=null;latchBankruptcy(this.state);}
     return result;
   }
 
   resolveCityEvent(eventId, actor) {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const story = getCitizenStory(this.state, actor);
     if (typeof eventId !== 'string' || eventId.length > 160 || !story?.event || story.event.id !== eventId) return { ok: false, message: '这条街坊提议已经变化，请重新点选街上的居民或车辆' };
     if (!story.event.available) return { ok: false, message: story.event.reason };
@@ -968,6 +989,7 @@ export class CitySimulation {
   }
 
   setFireBudget(value) {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     if (![70, 100, 130].includes(value)) return { ok: false, message: '消防预算只能选择省预算 70%、标准 100% 或加强 130%' };
     if (!this.state.buildings.some(b => b.type === 'cityHall' && civicBuildingReady(b))) return { ok: false, message: '需要正在营业且道路、水电正常的市政府，才能调整预算' };
     if (this.state.civic.fireBudget === value) return { ok: false, message: '当前已经使用这个消防预算档位' };
@@ -976,6 +998,7 @@ export class CitySimulation {
   }
 
   setCivicPolicy(value){
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const policy=CIVIC_POLICIES[value];if(!policy)return {ok:false,message:'请选择有效的市政方针'};
     if(!this.state.buildings.some(b=>b.type==='cityHall'&&civicBuildingReady(b)))return {ok:false,message:'需要正在办公且道路、水电正常的市政府，才能调整市政方针'};
     if(this.state.civic.policy===value)return {ok:false,message:`当前已经实行${policy.label}`};
@@ -984,6 +1007,7 @@ export class CitySimulation {
   }
 
   startFireDrill() {
+    if(isBankrupt(this.state))return {ok:false,message:BANKRUPTCY_MESSAGE};
     const s = this.state, plan = planFireDrill(s);
     if (!plan.ready) return { ok: false, message: plan.reason };
     const responseTicks = Math.max(3, Math.ceil(plan.path.length / 2));
@@ -1036,9 +1060,9 @@ export class CitySimulation {
     const b = this.state.buildings.find(b => b.id === t.buildingId);
     if (b) {
       if(DECORATIONS[b.type])return {
-        title:DECORATIONS[b.type].name,subtitle:`景观装饰 · 1 × 1 格 · (${x}, ${y})`,
+        title:DECORATIONS[b.type].name,subtitle:`景观装饰 · ${footprintSize(b)} × ${footprintSize(b)} 格 · (${b.x}, ${b.y})`,
         metrics:[{label:'道路 / 水电',value:'无需连接'},{label:'美观影响半径',value:`${gardenRadius(b)} 格`},{label:'社区美观加成',value:`最高 +${gardenStrength(b)} · 随距离递减`},{label:'状态',value:b.active?'开放中':'已暂停'},{label:'月维护',value:`¥${round(DECORATIONS[b.type].maintenance*(b.active?1:.15))}`}],
-        problem:b.active?'':'设施已暂停',tip:'空地即可摆放，改善附近环境并提供休闲景观覆盖。小型装饰的美观较低，可组合布置以满足住宅升级要求。',buildingId:b.id,active:b.active,
+        problem:b.active?'':'设施已暂停',tip:DECORATIONS[b.type].description+'。空地即可摆放，无需道路水电；暂停后美观与照明停止。',buildingId:b.id,active:b.active,
       };
       if (GARDENS.includes(b.type)) return {
         title: BUILDING_TIERS[b.type].names[b.level-1], subtitle: `等级 ${b.level} / 6 · 开放式绿地 · (${x}, ${y})`,
@@ -1189,10 +1213,10 @@ export class CitySimulation {
       const legacyPrivate=['residential','commercial'].includes(b.type)&&LEGACY_WIDE_PRIVATE_KINDS.has(b.businessKind);
       const legacyEstate=legacyPrivate&&['french','hotel'].includes(b.businessKind);
       if(b.legacyLotArea!==undefined&&!(legacyPrivate&&((b.legacyLotArea===4&&b.footprint===1)||(legacyEstate&&b.legacyLotArea===9&&[1,2].includes(b.footprint)))))fail();
-      const legacyLarge=(b.footprint===2&&(legacyPrivate||['shoppingComplex','sportsHall','districtOffice'].includes(b.type)))||(b.footprint===3&&(legacyEstate||b.type==='shoppingComplex'));
-      if (!legacyLarge && !(isUtility(b.type)&&[1,2].includes(b.footprint)) && b.footprint !== undefined && !(PRIVATE.includes(b.type)&&[1,newBuildingFootprint(b.businessKind)].includes(b.footprint)) && !(b.type==='shoppingComplex'&&b.footprint===1) && !(newBuildingFootprint(b.type) > 1 && (b.footprint===newBuildingFootprint(b.type) || (['sportsHall','cityHall','plaza','chessPavilion'].includes(b.type) && b.footprint===1) || (b.type==='operaStage'&&b.footprint===3)))) fail();
+      const legacyLarge=(b.footprint===2&&(legacyPrivate||DECORATIONS[b.type]?.style==='famousClassical'||['shoppingComplex','sportsHall','districtOffice'].includes(b.type)))||(b.footprint===3&&(legacyEstate||b.type==='shoppingComplex'));
+      if (!legacyLarge && !(DECORATIONS[b.type]?.style==='famousClassical'&&b.footprint===1) && !(isUtility(b.type)&&[1,2].includes(b.footprint)) && b.footprint !== undefined && !(PRIVATE.includes(b.type)&&[1,newBuildingFootprint(b.businessKind)].includes(b.footprint)) && !(b.type==='shoppingComplex'&&b.footprint===1) && !(newBuildingFootprint(b.type) > 1 && (b.footprint===newBuildingFootprint(b.type) || (['sportsHall','cityHall','plaza','chessPavilion'].includes(b.type) && b.footprint===1) || (b.type==='operaStage'&&b.footprint===3)))) fail();
       if(newBuildingFootprint(b.type)===3&&b.type!=='operaStage'&&b.footprint!==3&&!(b.type==='shoppingComplex'&&[1,2].includes(footprintSize(b))))fail();
-      if ((['hospital','stadium'].includes(b.type)||LANDMARKS[b.type]?.footprint===2) && b.footprint!==2) fail();
+      if ((['hospital','stadium'].includes(b.type)||LANDMARKS[b.type]?.footprint===2||DECORATIONS[b.type]?.footprint===2) && b.footprint!==2) fail();
       for(const c of buildingCells(b)){
         if(!inBounds(c.x,c.y,mapSize)||positions.has(index(c.x,c.y,mapSize)))fail();
         const t=cleanTiles[index(c.x,c.y,mapSize)];
@@ -1205,6 +1229,10 @@ export class CitySimulation {
     if (cleanBuildings.filter(b => b.type === 'cityHall').length > 1) fail();
     if (cleanTiles.some(t => t.buildingId !== null && (!ids.has(t.buildingId) || !positions.has(index(t.x,t.y,mapSize)))) || [...ids].some(id => id >= raw.nextId) || cleanTiles[index(0, 32,mapSize)].road === 0) fail();
     if (!raw.loan || typeof raw.loan.taken !== 'boolean' || !num(raw.loan.remaining, 0, 7200, true) || raw.loan.remaining % 300 !== 0 || !num(raw.loan.grace, 0, 3, true) || !num(raw.loan.monthsPaid, 0, 24, true) || (!raw.loan.taken && (raw.loan.remaining || raw.loan.grace || raw.loan.monthsPaid)) || (raw.loan.taken && raw.loan.remaining !== 7200 - raw.loan.monthsPaid * 300)) fail();
+    if(raw.bankruptcy!==undefined&&raw.bankruptcy!==null){
+      const b=raw.bankruptcy;
+      if(typeof b!=='object'||Array.isArray(b)||!raw.loan.taken||raw.money>0||b.tick!==raw.tick||b.month!==raw.month||b.money!==raw.money)fail();
+    }
     if (typeof raw.districtName !== 'string' || raw.districtName.length > 24 || !raw.districtName.trim() || !num(raw.profitableMonths, 0, 1e8, true)) fail();
     if (raw.mayorName !== undefined && (typeof raw.mayorName !== 'string' || raw.mayorName.length > 24)) fail();
     const cityGoal=loadCityGoal(raw.cityGoal,raw.month);if(!cityGoal)fail();
@@ -1269,6 +1297,7 @@ export class CitySimulation {
       ...(raw.customTerrain!==undefined?{customTerrain:raw.customTerrain}:{}),
       tiles: cleanTiles, buildings: cleanBuildings, nextId: raw.nextId, districtName: raw.districtName, mayorName: raw.mayorName ?? '', cityGoal,
       loan: { taken: raw.loan.taken, remaining: raw.loan.remaining, grace: raw.loan.grace, monthsPaid: raw.loan.monthsPaid },
+      bankruptcy:raw.bankruptcy?{tick:raw.bankruptcy.tick,month:raw.bankruptcy.month,money:raw.bankruptcy.money}:null,
       milestones: Object.fromEntries(Object.keys(sim.state.milestones).map(k => [k, raw.milestones[k] ?? (['mature','civic'].includes(k)&&raw.milestones.global===true)])), roadLevelUnlocked:raw.roadLevelUnlocked??legacyRoadLevel, profitableMonths: raw.profitableMonths,
       cityLife, cityIncidents, civic,festivalGames:loadFestivalGames(raw.festivalGames,raw.seed,raw.month),marinaLife:loadMarinaLife(raw.marinaLife,cleanBuildings,raw.month),
       history: Array.isArray(raw.history) ? raw.history.slice(-120).filter(h => h && ['month', 'population', 'money', 'happiness', 'balance'].every(k => num(h[k], k === 'money' || k === 'balance' ? -1e12 : 0, 1e12))).map(h => ({ month: h.month, population: h.population, money: h.money, happiness: h.happiness, balance: h.balance })) : [],
@@ -1289,7 +1318,7 @@ export class CitySimulation {
     if (hadIncident && !sim.state.civic.incident) fail();
     // Validate the original occupied cells first, then compact obsolete oversized lots.
     // Already compacted 1x1 buildings stay that size so loading never occupies a neighbor.
-    let resized=false;
+    let resized=compactFamousSculpturePlots(sim.state);
     for(const b of sim.state.buildings.filter(b=>{
       const size=b.type==='residential'?2:b.type==='commercial'?newBuildingFootprint(b.businessKind):1;
       return (['residential','commercial'].includes(b.type)||b.type==='districtOffice')&&footprintSize(b)>size;

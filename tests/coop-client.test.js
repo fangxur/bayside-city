@@ -5,6 +5,18 @@ import {CoopStore} from '../server/coop-store.mjs';
 import {mayorIdentity} from '../src/city-identity.js';
 class Storage{constructor(){this.map=new Map();}get length(){return this.map.size;}key(i){return [...this.map.keys()][i];}getItem(k){return this.map.get(k)||null;}setItem(k,v){this.map.set(k,v);}removeItem(k){this.map.delete(k);}}
 function client(t){const oldStorage=globalThis.localStorage;globalThis.localStorage=new Storage();t.after(()=>globalThis.localStorage=oldStorage);const c=new CoopClient();c.identity={actor:{id:'person'},token:'test'};c.cityId='city';c.connected=true;c.view={revision:0,epoch:1};return c;}
+test('a committed acknowledgement updates the city without waiting for polling or fetching it again',async t=>{
+ const c=client(t),state={money:29400},plans={pedestrians:{people:[]},publicRoutes:[]};let updates=0,calls=0;
+ c.polling=true;c.onState=(view,changed)=>{assert(changed);assert.equal(view.state,state);assert.equal(view.renderPlans,plans);updates++;};
+ c.request=async(url)=>{calls++;assert(url.endsWith('/commands'));return {ok:true,message:'saved',revision:1,epoch:1,view:{revision:1,epoch:1,state,renderPlans:plans}};};
+ const result=await c.command('build',['park',[{x:10,y:29}]]);
+ assert(result.ok);assert.equal(calls,1);assert.equal(updates,1);assert.equal(c.pending().length,0);assert(!c.busy);
+ c.acceptView({revision:0,epoch:1,state:{money:30000}});assert.equal(c.view.state,state);assert.equal(updates,1);
+});
+test('a new snapshot without visual plans cannot reuse plans from an older revision',async t=>{
+ const c=client(t);c.acceptView({revision:1,epoch:1,state:{},renderPlans:{publicRoutes:[]}});
+ c.acceptView({revision:2,epoch:1,state:{}});assert.equal(c.view.renderPlans,undefined);
+});
 test('cooperative mayor credits follow joins and removals even while the city is paused at the same revision',async t=>{
  let now=100000;const store=new CoopStore(':memory:',{now:()=>now});t.after(()=>store.close());
  const owner=store.session('Jonathan').actor,friend=store.session('方旭').actor;
@@ -85,4 +97,16 @@ test('binding response loss recovers the cookie session even after retiring the 
  const c=client(t);c.leave();const oldFetch=globalThis.fetch;t.after(()=>globalThis.fetch=oldFetch);
  globalThis.fetch=async(_url,options)=>options.headers.Authorization?{ok:false,status:401,json:async()=>({message:'retired'})}:{ok:true,json:async()=>({actor:{id:'person',name:'原市长'},account:{username:'mayor'},sessionId:'device'})};
  const identity=await c.refreshIdentity();assert.equal(identity.actor.id,'person');assert.equal(identity.account.username,'mayor');assert(!identity.token);
+});
+test('presence stays separate from saves and drops late responses after leaving',async t=>{
+ const c=client(t);let finish,seen=[],body;c.onPresence=p=>seen.push(p);
+ c.request=async(path,options)=>{assert(path.endsWith('/presence'));body=options.body;return new Promise(resolve=>finish=resolve);};
+ const cells=[{x:8,y:32}];c.setPresence(cells[0],cells,'road');cells[0].x=99;
+ const sending=c.exchangePresence();assert.equal(body.cursor.x,8);assert.equal(body.cells[0].x,8);assert(!c.busy);assert.equal(c.pending().length,0);
+ c.leave();finish({presence:[{id:'other'}]});await sending;assert.deepEqual(seen,[[]]);
+});
+test('hidden construction previews clear remotely without disconnecting city commands',async t=>{
+ const c=client(t);c.presenceVisible=()=>false;c.setPresence({x:8,y:32},[{x:8,y:32}],'road');let sent;
+ c.request=async(path,options)=>{sent=options.body;return {presence:[]};};await c.exchangePresence();assert.equal(sent.cursor,null);assert.deepEqual(sent.cells,[]);assert(c.connected);
+ c.request=async()=>{throw Object.assign(Error('old server'),{status:404});};await c.exchangePresence();assert(c.presenceUnsupported);assert(c.connected);
 });

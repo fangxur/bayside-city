@@ -2,6 +2,7 @@ import {gzipSync} from 'node:zlib';
 import {networkInterfaces} from 'node:os';
 import {CoopAuth} from './coop-auth.mjs';
 import {SoloStore} from './solo-store.mjs';
+import {CoopPresence} from './coop-presence.mjs';
 export function invitationOrigin(req,{origin,lan=false,interfaces=networkInterfaces()}={}){
  if(origin)return origin;
  const url=new URL(`${req.socket.encrypted?'https':'http'}://${req.headers.host}`);
@@ -22,7 +23,7 @@ export function publicOrigin(value){
 export function coopHttp(store,{origin,lan=false,release='development'}={}){
  // Pin the public site explicitly: proxy headers supplied by a client are not authority.
  const allowedOrigin=publicOrigin(origin);
- const limits=new Map(),auth=new CoopAuth(store),solo=new SoloStore(store);
+ const limits=new Map(),auth=new CoopAuth(store),solo=new SoloStore(store),presence=new CoopPresence(store);
  const send=(req,res,status,data,extra={})=>{let body=Buffer.from(JSON.stringify(data));const headers={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...extra};if(body.length>2048&&/gzip/.test(req.headers['accept-encoding']||'')){body=gzipSync(body);headers['Content-Encoding']='gzip';headers.Vary='Accept-Encoding';}res.writeHead(status,headers);res.end(body);};
  return async(req,res,url)=>{
   if(!url.pathname.startsWith('/api/'))return false;
@@ -88,7 +89,13 @@ export function coopHttp(store,{origin,lan=false,release='development'}={}){
      const id=p[2],action=p[3];
      if(!action&&req.method==='GET')result=store.view(id,actor,url.searchParams.get('since')??-1);
      else if(!action&&req.method==='DELETE')result=store.deleteCity(id,actor);
-     else if(action==='commands'&&req.method==='POST')result=store.command(id,actor,data);
+     else if(action==='presence'&&req.method==='POST')result=presence.exchange(id,actor,data);
+     else if(action==='commands'&&req.method==='POST'){
+      result=await store.commandAsync(id,actor,data);
+      // Return the committed view in the acknowledgement, avoiding a second
+      // full-city round trip and a wait behind an older polling request.
+      result={...result,view:store.view(id,actor)};
+     }
      else if(action==='invite'&&req.method==='POST')result={...store.invite(id,actor,{reuse:data.reuse===true}),origin:invitationOrigin(req,{origin:allowedOrigin,lan})};
      else if(action==='members'&&req.method==='POST')result=store.remove(id,actor,data.memberId);
      else if(action==='logs'&&req.method==='GET')result=store.logs(id,actor,url.searchParams.get('before'));

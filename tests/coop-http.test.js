@@ -16,6 +16,7 @@ test('HTTP identities, invite join, simultaneous writes and authenticated export
  const invitation=await call(handler,`/api/cities/${id}/invite`,'POST',{},a.token);assert.equal((await call(handler,'/api/join','POST',{code:invitation.data.code},b.token)).status,200);
  const cmd=(x,i)=>({commandId:i,epoch:1,baseRevision:0,method:'build',args:['park',[{x,y:29}],{buildingId:null,roadSource:null,roadsOnly:false}]});
  const results=await Promise.all([call(handler,`/api/cities/${id}/commands`,'POST',cmd(10,'a'),a.token),call(handler,`/api/cities/${id}/commands`,'POST',cmd(12,'b'),b.token)]);assert(results.every(r=>r.data.ok));
+ for(const result of results){assert(result.data.view.state);assert.equal(result.data.view.revision,result.data.revision);assert(result.data.view.renderPlans);}
  const v=await call(handler,`/api/cities/${id}`,'GET',undefined,b.token);assert.equal(v.data.state.buildings.length,2);assert.equal(v.data.state.money,28800);
  assert.equal((await call(handler,`/api/cities/${id}`)).status,401);assert.equal((await call(handler,`/api/cities/${id}/commands`,'POST',cmd(15,'c'),b.token,'https://evil.invalid')).status,403);
  const exported=await call(handler,`/api/cities/${id}/export`,'GET',undefined,b.token);assert.equal(JSON.parse(exported.data.city).buildings.length,2);
@@ -68,4 +69,10 @@ test('LAN invitations replace loopback hosts only when LAN mode is enabled',()=>
  assert.equal(invitationOrigin(req,{lan:true,interfaces}),'http://192.168.50.222:4173');
  assert.equal(invitationOrigin(req,{lan:true,interfaces:{}}),'http://127.0.0.1:4173');
  req.headers.host='city.example:8080';assert.equal(invitationOrigin(req,{lan:true,interfaces}),'http://city.example:8080');
+});
+test('lightweight presence uses the same member and origin authentication as construction',async t=>{
+ const store=new CoopStore(':memory:');t.after(()=>store.close());const handler=coopHttp(store),a=store.session('甲'),b=store.session('乙'),outsider=store.session('外人'),id=store.create(a.actor,{name:'影子'}).cityId;store.join(store.invite(id,a.actor).code,b.actor);
+ const url=`/api/cities/${id}/presence`,hint={epoch:1,cursor:{x:10,y:29},cells:[{x:10,y:29}],tool:'road'};
+ assert.equal((await call(handler,url,'POST',hint)).status,401);assert.equal((await call(handler,url,'POST',hint,outsider.token)).status,403);assert.equal((await call(handler,url,'POST',hint,b.token,'https://evil.invalid')).status,403);
+ assert.equal((await call(handler,url,'POST',hint,b.token)).status,200);const result=await call(handler,url,'POST',{...hint,cursor:null,cells:[]},a.token);assert.equal(result.data.presence[0].name,'乙');assert.equal(store.view(id,a.actor).revision,0);
 });

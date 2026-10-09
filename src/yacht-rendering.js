@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import {stoneBridgeAt,stoneArchHeight} from './stone-bridges.js';
 import {YACHT_TYPES,yachtPose} from './marina.js';
 import {YachtLighting} from './vehicle-lighting.js';
 // Boats remain narrower than one water cell so orthogonal routes cannot cut across shore.
@@ -22,8 +23,10 @@ export function createYachtModel(kind){
  const lighting=new YachtLighting(group,kind);
  group.userData={wake,lighting,dispose:()=>{lighting.dispose();geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());}};return group;
 }
-export function updateYachtActor(actor,entry,seconds,hidden=false,night=0){
- const pose=yachtPose(entry,seconds),visible=!hidden&&!pose.underBridge;actor.x=pose.x;actor.y=pose.y;actor.status=pose.status;actor.visible=visible;
+export function updateYachtActor(actor,entry,seconds,hidden=false,night=0,state=null){
+ const pose=yachtPose(entry,seconds),bridge=state&&stoneBridgeAt(state,pose.x,pose.y);
+ const clearArch=!!bridge&&stoneArchHeight(bridge,bridge.axis==='ew'?pose.x:pose.y)>.73;
+ const visible=!hidden&&(!pose.underBridge||clearArch);actor.x=pose.x;actor.y=pose.y;actor.status=pose.status;actor.visible=visible;
  actor.position.set(pose.x-31.5,.23,pose.y-31.5);actor.model.position.copy(actor.position);actor.model.rotation.y=pose.angle;actor.model.visible=visible;
  actor.model.userData.wake.visible=visible&&(pose.status==='出航中'||pose.status==='返港中');
  actor.model.userData.lighting.setAmount(night);

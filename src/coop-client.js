@@ -1,6 +1,7 @@
 const IDENTITY='bayside-coop:identity',PENDING='bayside-coop:pending:';
 export class CoopClient{
- constructor({onState=()=>{},onStatus=()=>{},onNotice=()=>{},onAuthChange=()=>{}}={}){
+ constructor({onState=()=>{},onStatus=()=>{},onNotice=()=>{},onAuthChange=()=>{},onPresence=()=>{},presenceVisible=()=>true}={}){
+  this.onPresence=onPresence;this.presenceVisible=presenceVisible;this.presenceGeneration=0;this.presenceTimer=null;this.presenceHint={cursor:null,cells:[],tool:'inspect',valid:true};
   this.authEpoch=0;this.onAuthChange=onAuthChange;this.onState=onState;this.onStatus=onStatus;this.onNotice=onNotice;this.cityId=null;this.view=null;this.connected=false;this.accessDenied=false;this.busy=false;this.timer=null;
   try{this.identity=JSON.parse(localStorage.getItem(IDENTITY));}catch{this.identity=null;}
   this.storageListener=event=>{if(event.key!==IDENTITY)return;let next=null;try{next=JSON.parse(event.newValue);}catch{}if(JSON.stringify(next)===JSON.stringify(this.identity))return;this.authEpoch++;this.identity=next;this.onAuthChange({external:true});this.leave();this.onNotice('登录状态已在另一个标签页更改，请重新打开属于当前账号的城市。');};
@@ -37,14 +38,36 @@ export class CoopClient{
  async identify(name){if(this.identity)return;this.setIdentity(await this.request('/session',{method:'POST',body:{name}}));}
  status(){this.onStatus(this.accessDenied?'访问权限已变更 · 可离开合作城市':this.busy?'正在保存到合作城市…':!this.connected?'连接中断 · 合作城市只读':this.pending().length?'正在核对未确认的操作…':'已保存到合作城市 · v'+(this.view?.revision??0));}
  pending(){const list=[];for(let i=0;i<localStorage.length;i++){const key=localStorage.key(i);if(!key?.startsWith(PENDING))continue;try{const item=JSON.parse(localStorage.getItem(key));if(item.actor===this.identity?.actor.id&&item.city===this.cityId)list.push({key,...item});}catch{}}return list.sort((a,b)=>a.time-b.time);}
- async enter(id){this.leave();while(this.polling)await new Promise(resolve=>setTimeout(resolve,20));this.cityId=id;await this.poll(true);if(!this.connected)throw Error('无法读取合作城市');this.timer=setInterval(()=>this.poll().catch(()=>{}),1500);return this.view;}
- leave(){clearInterval(this.timer);this.timer=null;this.cityId=null;this.view=null;this.connected=false;this.accessDenied=false;}
+ async enter(id){this.leave();while(this.polling)await new Promise(resolve=>setTimeout(resolve,20));this.cityId=id;await this.poll(true);if(!this.connected)throw Error('无法读取合作城市');this.timer=setInterval(()=>this.poll().catch(()=>{}),1500);this.presenceTimer=setInterval(()=>this.exchangePresence(),500);return this.view;}
+ leave(){
+  if(this.presenceTimer&&this.cityId&&this.view&&!this.busy)this.request('/cities/'+this.cityId+'/presence',{method:'POST',body:{epoch:this.view.epoch,cursor:null,cells:[],tool:'inspect'}}).catch(()=>{});
+  clearInterval(this.timer);clearInterval(this.presenceTimer);this.presenceTimer=null;this.presenceGeneration++;this.presenceInFlight=null;this.presenceUnsupported=false;this.presenceHint={cursor:null,cells:[],tool:'inspect',valid:true};this.onPresence([]);
+  this.timer=null;this.cityId=null;this.view=null;this.connected=false;this.accessDenied=false;
+ }
+ setPresence(cursor,cells=[],tool='inspect',valid=true){this.presenceHint={cursor:cursor?{x:cursor.x,y:cursor.y}:null,cells:cells.slice(0,256).map(p=>({x:p.x,y:p.y})),tool,valid};}
+ async exchangePresence(){
+  const id=this.cityId,generation=this.presenceGeneration;
+  if(!id||!this.view||!this.connected||this.presenceUnsupported||this.presenceInFlight===generation)return;
+  this.presenceInFlight=generation;
+  const hidden=!this.presenceVisible()||(typeof document!=='undefined'&&document.hidden);
+  try{
+   const result=await this.request('/cities/'+id+'/presence',{method:'POST',body:{epoch:this.view.epoch,...(hidden?{cursor:null,cells:[],tool:'inspect'}:this.presenceHint)}});
+   if(generation===this.presenceGeneration&&id===this.cityId)this.onPresence(result.presence||[]);
+  }catch(error){if(generation===this.presenceGeneration){this.onPresence([]);if(error.status===404)this.presenceUnsupported=true;}}
+  finally{if(this.presenceInFlight===generation)this.presenceInFlight=null;}
+ }
+ acceptView(data){
+  if(this.view&&data.revision<this.view.revision)return;
+  const reset=this.view&&data.epoch!==this.view.epoch;
+  this.view={...this.view,...data,...(data.state?{renderPlans:data.renderPlans}:{})};
+  this.onState(this.view,!!data.state,reset);
+ }
  async poll(force=false){
   const id=this.cityId,epoch=this.authEpoch;if(!id||this.polling)return;this.polling=true;
   try{
    const data=await this.request('/cities/'+id+(force?'':'?since='+(this.view?.revision??-1)));
    if(id!==this.cityId||epoch!==this.authEpoch)return;this.connected=true;this.accessDenied=false;
-   if(!this.view||data.revision>=this.view.revision){const reset=this.view&&data.epoch!==this.view.epoch;this.view={...this.view,...data};this.onState(this.view,!!data.state,reset);}
+   this.acceptView(data);
   }catch(e){if(id===this.cityId&&epoch===this.authEpoch){this.connected=false;if([401,403].includes(e.status)||e.code==='ACCOUNT_CHANGED'){if(!this.accessDenied)this.onNotice(e.message+'。可离开此城；未确认操作会留待恢复权限后核对。');this.accessDenied=true;}}}
   finally{this.polling=false;this.status();}
   if(this.connected&&!this.busy&&this.pending().length)await this.recover();
@@ -67,10 +90,11 @@ export class CoopClient{
   this.busy=true;this.status();let result;
   try{
    result=await this.request('/cities/'+city+'/commands',{method:'POST',body:command});localStorage.removeItem(key);
+   if(city===this.cityId&&epoch===this.authEpoch&&result.view?.state){this.acceptView(result.view);this.connected=true;this.accessDenied=false;}
   }catch(e){const rejected=e.status>=400&&e.status<500&&![401,403,429].includes(e.status);if(rejected)localStorage.removeItem(key);this.connected=false;result={ok:false,message:rejected?e.message:'尚未确认保存结果，重连后会自动核对，请勿重复建设。'};}
   finally{this.busy=false;}
   // Await the authoritative snapshot before existing UI handlers inspect the simulation.
-  if(city===this.cityId&&epoch===this.authEpoch){while(this.polling)await new Promise(resolve=>setTimeout(resolve,20));await this.poll(true);}
+  if(city===this.cityId&&epoch===this.authEpoch&&!result.view?.state){while(this.polling)await new Promise(resolve=>setTimeout(resolve,20));await this.poll(true);}
   this.status();return result;
  }
 }

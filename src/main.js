@@ -1,4 +1,6 @@
 import {CoopClient} from './coop-client.js';
+import {isBankrupt,BANKRUPTCY_MESSAGE} from './city-bankruptcy.js';
+import {setupTaxControl} from './tax-control.js';
 import {ENTRANCE_SIDE_NAMES} from './city-entrances.js';
 import {setupCoopUI} from './coop-ui.js';
 import {setupAccountUI} from './account-ui.js';
@@ -27,7 +29,7 @@ import {commercialSupply} from './commercial-prerequisites.js';
 import {commercialPrerequisite} from './commercial-prerequisites.js';
 import {ZONE_ECONOMY,privateMaintenance} from './economy.js';
 import {developmentSummary} from './city-demand.js';
-import { DECORATIONS,EUROPEAN_SCULPTURE_KINDS } from './decorations.js';
+import { DECORATIONS,EUROPEAN_SCULPTURE_KINDS,FAMOUS_SCULPTURE_KINDS } from './decorations.js';
 import { BUSINESS_KINDS, businessKindsFor } from './business-kinds.js';
 import {RESIDENTIAL_STYLE_GROUPS} from './residential-styles.js';
 import {COMMERCIAL_STYLE_GROUPS,commercialConstructionKinds} from './commercial-styles.js';
@@ -39,6 +41,7 @@ import {SimulationRunner} from './simulation-runner.js';
 import {MAP_SIZE_OPTIONS,mapSize} from './grid.js';
 import {cityGoalsForMapSize,DEFAULT_CITY_GOAL,cityGoalProgress} from './city-goals.js';
 import { CityRenderer } from './renderer.js';
+import {roadShapeCells} from './road-shapes.js';
 import { getCitizenStory, eventTitle } from './city-life.js';
 import { upgradeOffer, gardenStrength, isUtility, unlockedRoadLevel } from './progression.js';
 import {getOnboarding,onboardingProgress,onboardingClock} from './onboarding.js';
@@ -102,6 +105,8 @@ const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const paths = {
   home:'M3 10 12 3l9 7M5 9v12h14V9M9 21v-8h6v8',
   road:'M7 3 3 21M17 3l4 18M12 3v4m0 3v4m0 3v4',
+  circle:'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z',
+  block:'M3 3h18v18H3z',
   shop:'M3 10h18l-2-6H5l-2 6ZM4 10v11h16V10M9 21v-6h6v6M3 10q2 5 4 0 2 5 5 0 2 5 5 0 2 5 4 0',
   boat:'M3 14l2 6h14l2-6-9-3-9 3ZM8 12V7h8v5M12 7V3M2 22c2-2 3 2 5 0s3 2 5 0 3 2 5 0 3 2 5 0',
   factory:'M3 21V9l6 4V8l7 5V4h4v17H3ZM6 17h1m4 0h1m4 0h1',
@@ -161,10 +166,10 @@ const catalog = [
 for(const [id,item] of Object.entries(LARGE_UTILITIES))catalog.push({id,label:item.name,icon:item.type,help:item.description+' · 临路连接城外道路 · ¥'+number(item.cost)});
 for (const [id,item] of Object.entries(COMMUNITY_BUILDINGS)) catalog.push({id,label:item.name,icon:item.icon,help:`${item.name}${['policeStation','busStop'].includes(id)?' · '+item.description:''}${item.footprint>1?` · ${item.footprint}×${item.footprint} 占地`:' · 1×1 占地'} · ¥${item.cost} · 月维护 ${item.maintenance} · ${item.roadService?'沿道路':'服务半径'} ${item.radius} 格 · ${item.fixedFacility?'完整设施，无需升级':'可升六级'}${item.category==='religion'?' · 精神慰藉满意度 +'+item.bonus+'，同类取最高值':''}${isCommunityBusiness(id)?` · 一级提供 ${item.jobs} 个岗位，发放企业工资并缴纳商业税`:''} · ${requiresRoad(id)?'需要道路水电':'无需临路，需要城市水电供应'}${id==='marina'?' · 需临水，升级仅随 1,000 / 5,000 / 10,000 / 20,000 / 50,000 人口阶段开放，居民购船需造船厂':''}${id==='districtOffice'?' · 依赖市政府运行；只扩展片区市政覆盖，不负责城市晋级、方针、预算和消防调度':''}`});
 for(const [id,k] of Object.entries(BUSINESS_KINDS))catalog.push({id,label:k.name,icon:k.zone==='residential'?'home':k.zone==='commercial'?'shop':'factory',help:`${k.description} · ${k.footprint>1?'点击整栋建设，接通道路水电后施工':'拖拽规划'} · 沿用${k.zone==='residential'?'住宅':k.zone==='commercial'?'商业':'工业'}供需与升级规则`});
-for(const [id,d] of Object.entries(DECORATIONS))catalog.push({id,label:d.name,icon:'landmark',help:`${d.description} · ¥${d.cost} · 月维护 ${d.maintenance} · 提供住宅休闲景观覆盖 · 美观最高 +${d.strength} · 半径 ${d.radius} 格 · 无需道路水电`});
+for(const [id,d] of Object.entries(DECORATIONS))catalog.push({id,label:d.name,icon:'landmark',help:`${d.description} · ${newBuildingFootprint(id)}×${newBuildingFootprint(id)} 占地 · ¥${d.cost} · 月维护 ${d.maintenance} · 提供住宅休闲景观覆盖 · 美观最高 +${d.strength} · 半径 ${d.radius} 格 · 无需道路水电`});
 const toolBuildCost=id=>BUSINESS_KINDS[id]?.cost??TOOLS[id]?.cost??TOOLS[BUSINESS_KINDS[id]?.zone]?.cost??0;
 const footprintThenCost=(a,b)=>newBuildingFootprint(a)-newBuildingFootprint(b)||toolBuildCost(a)-toolBuildCost(b);
-const gardenTools=['park','plaza',...Object.keys(COMMUNITY_BUILDINGS).filter(id=>COMMUNITY_BUILDINGS[id].category==='entertainment'&&!isCommunityBusiness(id)),...Object.keys(DECORATIONS).filter(id=>!EUROPEAN_SCULPTURE_KINDS.includes(id))].sort((a,b)=>TOOLS[a].cost-TOOLS[b].cost);
+const gardenTools=['park','plaza',...Object.keys(COMMUNITY_BUILDINGS).filter(id=>COMMUNITY_BUILDINGS[id].category==='entertainment'&&!isCommunityBusiness(id)),...Object.keys(DECORATIONS).filter(id=>!EUROPEAN_SCULPTURE_KINDS.includes(id)&&!FAMOUS_SCULPTURE_KINDS.includes(id))].sort((a,b)=>TOOLS[a].cost-TOOLS[b].cost);
 const toolGroups = {
   residential:{label:'住宅',icon:'home',sections:RESIDENTIAL_STYLE_GROUPS.map(group=>({...group,tools:[...group.tools].sort(footprintThenCost)})),tools:businessKindsFor('residential').sort(footprintThenCost)},
   commercial:{label:'商业',icon:'shop',sections:COMMERCIAL_STYLE_GROUPS.map(group=>({...group,tools:[...group.tools].sort(footprintThenCost)})),tools:commercialConstructionKinds().sort(footprintThenCost)},
@@ -183,7 +188,7 @@ const toolGroups = {
     tools:['power','water','largePower','largeWater','fireStation','cityHall','districtOffice','policeStation','busStop','school','library','grandGallery','clinic','hospital','sportsHall','stadium','grandStadium'],
   },
   religion:{label:'宗教与信仰',icon:'landmark',tools:Object.keys(COMMUNITY_BUILDINGS).filter(id=>COMMUNITY_BUILDINGS[id].category==='religion').sort((a,b)=>TOOLS[a].cost-TOOLS[b].cost)},
-  landscape: {label:'休闲景观',icon:'tree',sections:[{label:'公园与庭园',tools:gardenTools},{label:'欧洲古典雕塑',description:'1×1 石雕与青铜群像 · 自带暖色基座照明',tools:EUROPEAN_SCULPTURE_KINDS}],tools:[...gardenTools,...EUROPEAN_SCULPTURE_KINDS]},
+  landscape: {label:'休闲景观',icon:'tree',sections:[{label:'公园与庭园',tools:gardenTools},{label:'欧洲古典雕塑',description:'1×1 石雕与青铜群像 · 自带暖色基座照明',tools:EUROPEAN_SCULPTURE_KINDS},{label:'世界著名雕像',description:'2×2 雕像广场 · 大型白石人物与夜间照明',tools:FAMOUS_SCULPTURE_KINDS}],tools:[...gardenTools,...EUROPEAN_SCULPTURE_KINDS,...FAMOUS_SCULPTURE_KINDS]},
 };
 for(const t of catalog){const zone=BUSINESS_KINDS[t.id]?.zone||t.id;if(ZONE_ECONOMY[zone])t.help+=` · 开发费 ¥${BUSINESS_KINDS[t.id]?.cost??TOOLS[zone].cost} / ${newBuildingFootprint(t.id)>1?'栋':'格'}（一次性） · 建成后一级月配套维护 ¥${privateMaintenance({type:zone,level:1,footprint:newBuildingFootprint(t.id)})} / 栋 · 空置也计费`; }
 const primaryTools=['inspect','roads','municipal','industrial','residential','commercial','religion','landscape','upgrade','landmark','move','bulldoze'];
@@ -192,6 +197,13 @@ const toolButton=t=>`<button class="tool-button" data-tool="${t.id}" aria-label=
 $('build-toolbar').innerHTML=primaryTools.map(id=>toolGroups[id]?`<button class="tool-button tool-group" data-tool-group="${id}" aria-label="${toolGroups[id].label}" aria-expanded="false" aria-controls="tool-submenu" title="展开${toolGroups[id].label}">${icon(toolGroups[id].icon)}<span>${toolGroups[id].label}</span><small class="group-chevron">⌃</small></button>`:toolButton(catalog.find(t=>t.id===id))).join('');
 const toolSubmenu=document.createElement('nav');toolSubmenu.id='tool-submenu';toolSubmenu.className='tool-submenu glass';toolSubmenu.hidden=true;toolSubmenu.setAttribute('aria-label','建设子菜单');$('build-toolbar').before(toolSubmenu);
 let openToolGroup=null;
+let roadShape='line';
+const roadShapes={
+  line:{label:'自由绘制',icon:'road',help:'拖动铺设直角道路'},
+  circle:{label:'圆形',icon:'circle',help:'从圆心向外拖动，预览并铺设环形道路'},
+  block:{label:'方形',icon:'block',help:'从中心向外拖动，预览并铺设方形环路'},
+};
+const roadShapeHelp=()=>`${roadShapes[roadShape].help} · ¥25 / 格 · 已有道路不重复扣费`;
 function closeToolSubmenu(restoreFocus=false){
   const trigger=document.querySelector(`[data-tool-group="${openToolGroup}"]`);
   toolSubmenu.hidden=true;openToolGroup=null;$('game').classList.remove('menu-open');
@@ -200,16 +212,23 @@ function closeToolSubmenu(restoreFocus=false){
   if(restoreFocus)trigger?.focus();
 }
 function syncToolSelection(){
-  document.querySelectorAll('[data-tool]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.tool===(LANDMARKS[currentTool]?'landmark':currentTool))));
+  document.querySelectorAll('[data-tool]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.roadShape?currentTool==='road'&&b.dataset.roadShape===roadShape:b.dataset.tool===(LANDMARKS[currentTool]?'landmark':currentTool))));
   document.querySelectorAll('[data-tool-group]').forEach(b=>b.classList.toggle('has-selection',toolGroups[b.dataset.toolGroup].tools.includes(currentTool)));
+  const roadButton=document.querySelector('[data-tool-group="roads"]');
+  const activeShape=currentTool==='road'?roadShapes[roadShape]:null;
+  roadButton.querySelector('span').textContent=activeShape&&roadShape!=='line'?`${activeShape.label}路`:'道路';
+  roadButton.querySelector('svg').outerHTML=icon(activeShape?.icon||'road');
+  roadButton.setAttribute('aria-label',activeShape?`道路 · 当前${activeShape.label}`:'道路');
 }
 function toggleToolGroup(id){
   if(openToolGroup===id){closeToolSubmenu();return;}
   if(compactMedia.matches){setMobileMapPanel(null);setPanelCollapsed('left',true);setPanelCollapsed('right',true);}
   closeToolSubmenu();openToolGroup=id;const group=toolGroups[id];
-  const columns=Math.min(5,group.sections?Math.max(...group.sections.map(section=>section.tools.length)):group.tools.length);
+  const columns=id==='roads'?3:Math.min(5,group.sections?Math.max(...group.sections.map(section=>section.tools.length)):group.tools.length);
   toolSubmenu.style.setProperty('--submenu-width',`${columns*140+(columns-1)*7+24}px`);
-  const contents=group.sections
+  const contents=id==='roads'
+    ?`<p class="road-shape-hint">自由绘制：拖动铺路。圆形与方形：从中心向外拖动确定大小，松开后一次铺设。</p><div class="road-shape-options" role="group" aria-label="道路形状">${Object.entries(roadShapes).map(([shape,item])=>`<button type="button" class="road-shape-button" data-road-shape="${shape}" ${shape==='line'?'data-tool="road"':''} aria-pressed="${currentTool==='road'&&roadShape===shape}" title="${item.help}">${icon(item.icon)}<span>${item.label}</span></button>`).join('')}</div><div class="road-bridge-option">${toolButton(catalog.find(t=>t.id==='bridge'))}</div>`
+    :group.sections
     ?`<div class="submenu-sections">${group.sections.map((section,index)=>`<section class="submenu-section" aria-labelledby="submenu-section-${index}"><strong class="submenu-section-title" id="submenu-section-${index}">${section.label}</strong>${section.description?`<p class="submenu-section-description">${section.description}</p>`:''}<div class="submenu-tools">${section.tools.map(tool=>toolButton(catalog.find(t=>t.id===tool))).join('')}</div></section>`).join('')}</div>`
     :`<div class="submenu-tools">${group.tools.map(tool=>toolButton(catalog.find(t=>t.id===tool))).join('')}</div>`;
   toolSubmenu.innerHTML=`<div class="submenu-heading"><strong>${group.label}</strong><button class="submenu-close" aria-label="关闭子菜单">×</button></div><div id="submenu-notice" role="status" hidden></div>${contents}`;
@@ -217,8 +236,9 @@ function toggleToolGroup(id){
   syncMobileOverview();
   toolSubmenu.querySelector('.submenu-close').onclick=()=>closeToolSubmenu(true);
   toolSubmenu.querySelectorAll('[data-tool]').forEach(btn=>btn.onclick=()=>{selectTool(btn.dataset.tool);document.querySelector(`[data-tool-group="${id}"]`).focus();if(tutorial?.action.tool===btn.dataset.tool)requestAnimationFrame(()=>renderer.focusOnboarding(tutorial.action.target));});
+  toolSubmenu.querySelectorAll('[data-road-shape]').forEach(btn=>btn.onclick=()=>{roadShape=btn.dataset.roadShape;selectTool('road');document.querySelector('[data-tool-group="roads"]').focus();if(tutorial?.action.tool==='road')requestAnimationFrame(()=>renderer.focusOnboarding(tutorial.action.target));});
   syncToolSelection();refreshCommercialLocks();
-  toolSubmenu.querySelector('[data-tool]')?.focus();
+  (toolSubmenu.querySelector('[data-road-shape][aria-pressed="true"]')||toolSubmenu.querySelector('[data-road-shape]')||toolSubmenu.querySelector('[data-tool]'))?.focus();
 }
 function refreshCommercialLocks(){
   if(!sim)return;
@@ -273,6 +293,8 @@ const catalogLevelById={};
 const PREFIX = 'bayside-v1:';
 let soloResume=null,coopUI,accountUI,soloRecord=null;
 const coop=new CoopClient({
+ presenceVisible:()=>started&&!anyDialog(),
+ onPresence:people=>renderer?.setCoopPresence(people,tool=>catalog.find(t=>t.id===tool)?.label||TOOLS[tool]?.label||'查看'),
  onAuthChange:change=>accountChanged(change),
  onStatus:message=>{if(coop.cityId)$('save-state').textContent=message;},
  onNotice:message=>toast(message),
@@ -286,7 +308,7 @@ const coop=new CoopClient({
    lastCelebrationState=celebrationSnapshot(sim.state);
   }
   paused=view.paused;speed=view.speed;renderer.setSpeed(speed);undoReady=view.canUndo;lastEditTick=sim.state.tick;
-  if(changed){syncWorld({sameWorld:started&&!reset});if(hover&&currentTool!=='inspect')previewAt(hover);}else updateUI();
+  if(changed){syncWorld({sameWorld:started&&!reset,pedestrianPlans:view.renderPlans?.pedestrians,publicRoutes:view.renderPlans?.publicRoutes});if(hover&&currentTool!=='inspect')previewAt(hover);}else updateUI();
  }
 });
 const soloLibrary=new SoloLibrary(coop,{onStatus:(record,message)=>{if(!coop.cityId&&soloRecord===record)$('save-state').textContent=message;}});
@@ -370,7 +392,7 @@ async function loadAccountCity(record){
  soloRecord=record;
  restoreSnapshot({...record.snapshot,accountCity:{id:record.id,owner:record.owner}});
 }
-async function mutate(method,...args){return coop.cityId?coop.command(method,args):sim[method](...args);}
+async function mutate(method,...args){if(isBankrupt(sim.state)&&!['saveSnapshot','restoreSnapshot','setCityIdentity'].includes(method))return {ok:false,message:BANKRUPTCY_MESSAGE};return coop.cityId?coop.command(method,args):sim[method](...args);}
 function coopVersion(){return coop.cityId&&coop.view?{epoch:coop.view.epoch,revision:coop.view.revision}:undefined;}
 function currentMayors(){return mayorIdentity(sim.state,coop.cityId?coop.view?.members||[]:null);}
 async function mutateAt(version,method,...args){return coop.cityId?coop.command(method,args,version):sim[method](...args);}
@@ -398,6 +420,7 @@ function toast(message,error=false) { clearTimeout(toastTimeout); $('toast').tex
 const milestoneQueue=[];
 let activeCelebration=null;
 function showNextMilestone(){
+  if(isBankrupt(sim?.state)){milestoneQueue.length=0;return;}
   if(!milestoneQueue.length)return;
   closeToolSubmenu();
   activeCelebration=milestoneQueue.shift();
@@ -414,9 +437,20 @@ $('milestone-dialog').addEventListener('close',()=>{
   if(milestoneQueue.length)showNextMilestone();
 });
 function anyDialog() { return [...document.querySelectorAll('dialog')].some(d=>d.open); }
-function isStopped() { return paused || moveSourceId !== null || moveRoadSource !== null || !started || document.hidden || anyDialog(); }
+function isStopped() { return isBankrupt(sim?.state)||paused || moveSourceId !== null || moveRoadSource !== null || !started || document.hidden || anyDialog(); }
 function openDialog(id) { if (!$(id).open) $(id).showModal(); $('map-tooltip').hidden=true; resetSimulationClock(); renderer?.setPaused(true); }
 function closeDialog(id) { $(id).close(); lastTime=performance.now(); renderer?.setPaused(isStopped()); }
+function showBankruptcy(){
+  if(!started||!isBankrupt(sim.state)||anyDialog())return;
+  $('bankruptcy-money').textContent='¥ '+number(sim.state.money);
+  $('bankruptcy-debt').textContent='¥ '+number(sim.state.loan.remaining);
+  $('bankruptcy-recovery').textContent=coop.cityId?'合作城市由房主读取破产前的存档；你也可以重新开始一座城市。应急贷款即使还清，也不能再次申请。':'读取破产前的存档，或重新开始一座城市。应急贷款即使还清，也不能再次申请。';
+  openDialog('bankruptcy-dialog');
+}
+$('bankruptcy-dialog').addEventListener('cancel',event=>event.preventDefault());
+document.addEventListener('close',event=>{if(event.target instanceof HTMLDialogElement)queueMicrotask(showBankruptcy);},true);
+$('bankruptcy-load').addEventListener('click',()=>{closeDialog('bankruptcy-dialog');if(coop.cityId)coopUI.open('saves');else{renderMenu();openDialog('menu-dialog');}});
+$('bankruptcy-restart').addEventListener('click',()=>{closeDialog('bankruptcy-dialog');$('new-game').click();});
 document.querySelectorAll('[data-close-dialog]').forEach(btn=>btn.addEventListener('click',()=>closeDialog(btn.closest('dialog').id)));
 document.querySelectorAll('dialog').forEach(d=>d.addEventListener('close',()=>{lastTime=performance.now();resetSimulationClock();renderer?.setPaused(isStopped());}));
 $('welcome-dialog').addEventListener('cancel',e=>e.preventDefault());
@@ -426,6 +460,7 @@ $('confirm-ok').addEventListener('click',()=>{const action=confirmAction;confirm
 
 function cellsFor(start,end) {
   if (!start || !end) return [];
+  if(currentTool==='road'&&roadShape!=='line')return roadShapeCells(roadShape,start,end);
   if (currentTool==='road' || (currentTool==='upgrade' && sim.tile(start.x,start.y)?.road)) {
     const cells=[];
     const pushLine=(a,b)=>{ const dx=Math.sign(b.x-a.x),dy=Math.sign(b.y-a.y); for(let i=0;i<=Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y));i++)cells.push({x:a.x+dx*i,y:a.y+dy*i}); };
@@ -440,18 +475,25 @@ function cellsFor(start,end) {
   return [end];
 }
 function previewAt(cell) {
+  coop.setPresence(started&&!anyDialog()?cell:null,[],currentTool);
   if (!renderer || !sim || !started || currentTool==='inspect' || !cell) { renderer?.setPreview([],true);$('preview-cost').textContent='';return; }
   if(currentTool==='move' && moveSourceId===null && moveRoadSource===null){
     const tile=sim.tile(cell.x,cell.y),b=sim.state.buildings.find(b=>b.id===tile?.buildingId);
     const road=!!tile?.road&&!tile.bridge&&!(cell.x===0&&cell.y===32),selectable=!!b||road;
     renderer.setPreview(selectable?[cell]:[],selectable);
+    coop.setPresence(cell,selectable?[cell]:[],currentTool,selectable);
     $('preview-cost').textContent=b?'按住拖动这座建筑':road?'按住拖动这段道路':tile?.bridge?'桥梁需保持完整跨河结构':tile?.road?'城市入口道路不能移动':'请选择建筑或道路';
     $('preview-cost').classList.toggle('negative',false);return;
   }
   const start=dragStart||cell;
-  const preview=sim.preview(currentTool,cellsFor(start,cell),{buildingId:moveSourceId,roadSource:moveRoadSource,roadsOnly:currentTool==='upgrade'&&!!sim.tile(start.x,start.y)?.road});
+  const inputCells=cellsFor(start,cell);
+  const preview=sim.preview(currentTool,inputCells,{buildingId:moveSourceId,roadSource:moveRoadSource,roadsOnly:currentTool==='upgrade'&&!!sim.tile(start.x,start.y)?.road});
+  const size=mapSize(sim.state);
+  const visibleCells=inputCells.filter(c=>c.x>=0&&c.y>=0&&c.x<size&&c.y<size);
+  const previewCells=preview.cells?.length?preview.cells:visibleCells;
   const coverage=currentTool==='move'?(moveSourceId?movedServiceCoverage(sim.state,moveSourceId,cell):null):placementServiceCoverage(sim.state,currentTool,cell);
-  renderer.setPreview(preview.cells?.length?preview.cells:cellsFor(dragStart||cell,cell),preview.valid,coverage?.cells);
+  renderer.setPreview(previewCells,preview.valid,coverage?.cells);
+  coop.setPresence(cell,previewCells,currentTool,preview.valid);
   $('preview-cost').textContent=preview.valid?`${preview.cost<0?'+':'¥ '}${number(Math.abs(preview.cost))}${preview.affected?` · 影响 ${preview.affected} 处`:''}`:`${preview.reason||'无法在这里建设'}${preview.cost>0?' · ¥ '+number(preview.cost):''}`;
   $('preview-cost').classList.toggle('negative',!preview.valid);
   if(currentTool==='move'){
@@ -481,10 +523,11 @@ function selectTool(id) {
   updateAllRoadsButton();
   setRoadFocus(false);
   const tool=catalog.find(t=>t.id===id);
-  $('tool-context-text').textContent=tool.help;
-  $('tool-context').firstElementChild.innerHTML=icon(tool.icon);
+  $('tool-context-text').textContent=id==='road'?roadShapeHelp():tool.help;
+  $('tool-context').firstElementChild.innerHTML=icon(id==='road'?roadShapes[roadShape].icon:tool.icon);
   if(id==='upgrade'){if(compactMedia.matches)setMobileMapPanel('view');else setPanelCollapsed('right',false);}
   if(id==='bridge') toast('指向河面或岸边预览整座桥；两岸有落点、无建筑阻挡且资金足够即可建设。');
+  if(id==='road'&&roadShape!=='line')toast(roadShapeHelp());
   if(id!=='inspect') {selected=null;renderer?.selectCell(null);updateInspector();}
   previewAt(hover);
 }
@@ -693,6 +736,7 @@ $('signal-button').addEventListener('click',()=>{
   toast(paused?'已定位路口。按 P 继续，观察车辆等灯与放行。':'红灯停、绿灯行；路口内的车辆会先驶离。');
 });
 function onHover(cell) {
+  coop.setPresence(started&&!anyDialog()?cell:null,[],currentTool);
   hover=cell;
   if(cell){keyboardCell={...cell};$('coordinate').textContent=`${cell.x} · ${cell.y}`;}
   if(!started||anyDialog()){ $('map-tooltip').hidden=true;return; }
@@ -1160,6 +1204,7 @@ function updateGuide() {
 }
 $('toggle-guide').addEventListener('click',()=>{objectiveExpanded=!objectiveExpanded;updateGuide();});
 function updateUI() {
+  if(isBankrupt(sim.state)){paused=true;tutorialClock=false;renderer?.setPaused(true);}
   updateOnboarding();
   updateAllRoadsButton();
   refreshCommercialLocks();
@@ -1185,9 +1230,9 @@ function updateUI() {
   if($('festival-calendar').open)renderFestivalCalendar();
   $('pause').innerHTML=icon(paused?'play':'pause');$('pause').setAttribute('aria-label',paused?'继续模拟':'暂停模拟');$('pause').setAttribute('aria-pressed',String(paused));
   document.querySelectorAll('[data-speed]').forEach(btn=>btn.setAttribute('aria-pressed',String(Number(btn.dataset.speed)===speed&&!paused)));
-  $('undo').disabled=coop.cityId?(!coop.view?.canUndo||coop.busy||!coop.connected):(!undoReady||lastEditTick!==state.tick);
-  $('pause').disabled=!!coop.cityId&&coop.view?.role!=='owner';
-  document.querySelectorAll('[data-speed]').forEach(btn=>btn.disabled=!!coop.cityId&&coop.view?.role!=='owner');
+  $('undo').disabled=isBankrupt(state)||(coop.cityId?(!coop.view?.canUndo||coop.busy||!coop.connected):(!undoReady||lastEditTick!==state.tick));
+  $('pause').disabled=isBankrupt(state)||!!coop.cityId&&coop.view?.role!=='owner';
+  document.querySelectorAll('[data-speed]').forEach(btn=>btn.disabled=isBankrupt(state)||!!coop.cityId&&coop.view?.role!=='owner');
   for(const type of ['residential','commercial','industrial']){const d=clamp(Number(s.demand?.[type])||0,0,100);$('demand-'+type).style.height=d+'%';$('demand-'+type+'-value').textContent=Math.round(d);}
   updateMobileOverview(s);
   syncBuildingFilterUI();
@@ -1206,6 +1251,7 @@ function updateUI() {
   const incident=state.civic?.incident;
   $('civic-dispatch').hidden=!incident;
   if(incident)$('civic-dispatch').innerHTML=`${icon('fireStation')}<span>消防演练 · ${incident.stage==='responding'?'出动中':'处置中'}<small>点击观察现场${paused?' · 当前已暂停':''}</small></span>${icon('arrow')}`;
+  showBankruptcy();
 }
 function updateMobileOverview(stats){
   for(const type of ['residential','commercial','industrial']){
@@ -1224,10 +1270,10 @@ function updateMobileOverview(stats){
     meter.setAttribute('aria-valuetext',value.textContent+'（已用 / 总容量）');
   }
 }
-function syncWorld(options){sim.state.mapSize=mapSize(sim.state);const max=sim.state.mapSize-1;$('target-x').max=String(max);$('target-y').max=String(max);renderer.setState(sim.state,options);refreshResidentJourney();updateUI();}
+function syncWorld(options){sim.state.mapSize=mapSize(sim.state);const max=sim.state.mapSize-1;$('target-x').max=String(max);$('target-y').max=String(max);const plans=coop.cityId&&coop.view?.state===sim.state?coop.view.renderPlans:undefined;renderer.setState(sim.state,{pedestrianPlans:plans?.pedestrians,publicRoutes:plans?.publicRoutes,...options});refreshResidentJourney();updateUI();}
 
-$('pause').addEventListener('click',async()=>{if(coop.cityId){const r=await mutate('setClock',{paused:!paused,speed});toast(r.message,!r.ok);return;}tutorialClock=false;paused=!paused;resetSimulationClock();renderer.setPaused(isStopped());updateUI();});
-document.querySelectorAll('[data-speed]').forEach(btn=>btn.addEventListener('click',async()=>{if(coop.cityId){const r=await mutate('setClock',{paused:false,speed:Number(btn.dataset.speed)});toast(r.message,!r.ok);return;}tutorialClock=false;speed=Number(btn.dataset.speed);paused=false;renderer.setPaused(isStopped());updateUI();}));
+$('pause').addEventListener('click',async()=>{if(isBankrupt(sim.state)){showBankruptcy();return;}if(coop.cityId){const r=await mutate('setClock',{paused:!paused,speed});toast(r.message,!r.ok);return;}tutorialClock=false;paused=!paused;resetSimulationClock();renderer.setPaused(isStopped());updateUI();});
+document.querySelectorAll('[data-speed]').forEach(btn=>btn.addEventListener('click',async()=>{if(isBankrupt(sim.state)){showBankruptcy();return;}if(coop.cityId){const r=await mutate('setClock',{paused:false,speed:Number(btn.dataset.speed)});toast(r.message,!r.ok);return;}tutorialClock=false;speed=Number(btn.dataset.speed);paused=false;renderer.setPaused(isStopped());updateUI();}));
 async function undo(){const result=await mutate('undo');toast(result.message|| (result.ok?'已撤销':'无法撤销'),!result.ok);undoReady=false;if(result.ok){if(currentTool==='move')selectTool('move');syncWorld();previewAt(keyboardMode?keyboardCell:hover);}else updateUI();}
 $('undo').addEventListener('click',undo);
 
@@ -1299,15 +1345,15 @@ $('new-game').addEventListener('click',()=>{if(coop.cityId){if(coop.busy||(!coop
 
 function updateBudget(){
   const state=sim.state,s=state.stats;
+  taxControl.sync();
   const key=[state.money,s.income,s.expenses,state.taxRate,JSON.stringify(state.loan),JSON.stringify(s.breakdown)].join('|');
   if(key===lastBudgetKey)return;lastBudgetKey=key;
   const open=[...$('budget-summary').querySelectorAll('details')].map(v=>v.open);
   $('budget-summary').innerHTML=`<div class="eyebrow">可用城市资金</div><div class="budget-number">¥ ${number(state.money)}</div><div class="budget-row"><span>预计每月财政收入</span><b class="positive">+${number(s.income)}</b></div><div class="budget-row"><span>预计每月财政支出</span><b>−${number(s.expenses)}</b></div><div class="budget-row"><span>月结余</span><b class="${s.balance>=0?'positive':'negative'}">${s.balance>=0?'+':'−'}${number(Math.abs(s.balance))}</b></div>`;
   $('budget-summary').insertAdjacentHTML('beforeend',`<details ${open[0]?'open':''}><summary>每月收入明细</summary>${[['居民缴税',s.breakdown.residentialIncome],['商业经营税',s.breakdown.commercialIncome],['工业经营税',s.breakdown.industrialIncome]].map(([label,value])=>`<div class="budget-row"><span>${label}</span><b class="positive">+¥${number(value)}</b></div>`).join('')}<p class="muted">居民税包含就业工资税 ¥${number(s.breakdown.wageTax)} 与居住服务费 ¥${number(s.breakdown.residentServiceTax)}。企业按实际到岗人数和建筑效率纳税。</p></details><details ${open[1]?'open':''}><summary>每月支出明细</summary>${[['住宅街区配套',s.breakdown.districtMaintenance.residential],['商业街区配套',s.breakdown.districtMaintenance.commercial],['工业街区配套',s.breakdown.districtMaintenance.industrial],['道路与桥梁',s.breakdown.roadMaintenance],['公共设施运行',s.breakdown.facilityMaintenance],['公共部门工资',s.breakdown.publicPayroll],['贷款还款',s.breakdown.loanPayment]].map(([label,cost])=>`<div class="budget-row"><span>${label}</span><b>¥${number(cost)}</b></div>`).join('')}<p class="muted">企业每月另向居民发放工资 ¥${number(s.breakdown.enterprisePayroll)}，属于居民与企业之间的资金流，不从市财政扣除。街区配套即使空置也会计费；开发费与升级费为一次性支出。</p></details>`);
-  $('tax-rate').value=state.taxRate;$('tax-value').value=state.taxRate+'%';
   const loan=state.loan||{};
-  $('loan-info').textContent=loan.taken?`应急贷款已使用 · 尚欠 ${number(loan.remaining)}。按约定宽限期结束后，每月偿还 300。`:'资金低于 3,000 时可申请一次应急贷款 6,000。宽限 3 个月，随后每月偿还 300，共 24 期。';
-  $('take-loan').disabled=loan.taken||state.money>=3000;
+  $('loan-info').textContent=loan.taken?`应急贷款机会已用完 · ${loan.remaining>0?`尚欠 ¥${number(loan.remaining)}，宽限期结束后每月偿还 ¥300。`:'贷款已还清。'}无法再次借款；资金 ≤ ¥0 时城市破产，本局失败。`:'资金低于 ¥3,000 时可申请一次应急贷款 ¥6,000。宽限 3 个月，随后每月偿还 ¥300，共 24 期。使用后若资金耗尽，将判定破产。';
+  $('take-loan').disabled=isBankrupt(state)||loan.taken||state.money>=3000;
 }
 function openBudget(){lastBudgetKey='';updateBudget();openDialog('budget-dialog');}
 $('budget-button').addEventListener('click',openBudget);$('income-button').addEventListener('click',openBudget);
@@ -1395,8 +1441,12 @@ function showCatalogEntry(entry){
   }else{levels.hidden=true;levels.innerHTML='';}
   const levelText=maxLevel>1?` · 当前查看 ${level} 级外观`:maxLevel===1?' · 固定外观':'';
   $('catalog-preview-description').textContent=`${entry.description} ${catalogStatusText(entry)}${levelText}`;
+  if(entry.id?.startsWith('decoration:')&&DECORATIONS[entry.id.slice(11)]?.style==='famousClassical'){
+    const credit=document.createElement('a');credit.href='/assets/sculptures/credits.html';credit.target='_blank';credit.rel='noopener';credit.textContent='雕像模型来源与许可';
+    $('catalog-preview-description').append(document.createElement('br'),credit);
+  }
   const view=catalogPreview(entry,level),preview=ensureCatalogRenderer();
-  preview.setState(view.state,{sameWorld:!!preview.state});preview.viewSize=view.viewSize;preview.azimuth=Math.PI/4;preview.focusCell(view.focus.x,view.focus.y);preview.target.y=view.focus.elevation||0;preview._resize();preview.renderer.shadowMap.needsUpdate=true;
+  preview.setState(view.state,{sameWorld:!!preview.state});preview.viewSize=view.viewSize;preview.catalogCameraHeight=view.cameraHeight??48;preview.azimuth=Math.PI/4;preview.focusCell(view.focus.x,view.focus.y);preview.target.y=view.focus.elevation||0;preview._resize();preview.renderer.shadowMap.needsUpdate=true;
 }
 function renderCatalog(){
   catalogData=cityCatalog(sim.state);
@@ -1494,7 +1544,14 @@ function updateCivic(){
 $('civic-button').addEventListener('click',openCivic);
 $('civic-dispatch').addEventListener('click',()=>observeCivic('incident'));
 $('civic-show-coverage').addEventListener('click',()=>{closeDialog('civic-dialog');selected=null;renderer.selectCell(null);selectTool('inspect');updateInspector();document.querySelector('[data-overlay="fire"]').click();});
-$('tax-rate').addEventListener('change',async event=>{const result=await mutate('setTax',Number(event.target.value));undoReady=false;updateUI();if(!result.ok)toast(result.message,true);});
+const taxControl=setupTaxControl({
+  input:$('tax-rate'),output:$('tax-value'),status:$('tax-status'),
+  getState:()=>({city:coop.cityId?`${coop.cityId}:${coop.view?.epoch}`:sim,rate:sim.state.taxRate,
+    disabledReason:isBankrupt(sim.state)?'城市已破产，无法调整税率。':coop.cityId?(coop.view?.role!=='owner'?'合作城市的税率由房主调整。':!coop.connected?'连接中断，重新同步后可调整税率。':coop.busy||coop.pending().length?'上一项操作正在保存或核对，请稍候。':''):''}),
+  commit:rate=>mutate('setTax',rate),
+  onApplied:()=>{undoReady=false;lastBudgetKey='';syncWorld();autosave();},
+  notify:message=>toast(message,true),
+});
 $('take-loan').addEventListener('click',async()=>{const result=await mutate('takeLoan');toast(result.message,!result.ok);syncWorld();});
 $('help-button').addEventListener('click',()=>openDialog('help-dialog'));
 $('locate-cell').addEventListener('click',()=>{const x=Number($('target-x').value),y=Number($('target-y').value),size=mapSize(sim.state);if(!Number.isInteger(x)||!Number.isInteger(y)||x<0||y<0||x>=size||y>=size){toast(`坐标范围为 0–${size-1} 的整数。`,true);return;}keyboardCell={x,y};keyboardMode=true;renderer.focusCell(x,y);renderer.selectCell(keyboardCell);closeDialog('help-dialog');previewAt(keyboardCell);toast(`施工光标已定位 (${x}, ${y})，选择工具后按 Enter 施工。`);});
@@ -1671,6 +1728,7 @@ try {
     }},
     onDragMove:cell=>{if(dragStart){if(movePickedOnDrag&&(cell.x!==dragStart.x||cell.y!==dragStart.y))moveDraggedAfterPick=true;previewAt(cell);}},
     onDragEnd:cell=>{if(dragStart){const start=dragStart,version=dragVersion;dragStart=null;dragVersion=undefined;
+      coop.setPresence(cell,[],currentTool);
       if(currentTool==='move'&&!cell){selectTool('move');return;}
       if(currentTool==='move'&&movePickedOnDrag&&cell.x===start.x&&cell.y===start.y&&!moveDraggedAfterPick){movePickedOnDrag=false;return;}
       movePickedOnDrag=false;moveDraggedAfterPick=false;commitBuild(start,cell,false,version);

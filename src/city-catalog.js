@@ -3,7 +3,7 @@ import {isEuropeanStreet,europeanHomeHeight} from './european-residential.js';
 import {isJapaneseHome,japaneseHomeHeight} from './japanese-residential.js';
 import {teaHouseHeight,buddhistTempleHeight} from './chinese-courtyard-architecture.js';
 import {COMMUNITY_BUILDINGS,isCommunityBusiness} from './community-buildings.js';
-import {DECORATIONS} from './decorations.js';
+import {DECORATIONS,isClassicalSculpture} from './decorations.js';
 import {LANDMARKS,MAX_LANDMARK_LEVEL,landmarkHeight} from './landmarks.js';
 import {YACHT_TYPES} from './marina.js';
 import {commercialPrerequisite} from './commercial-prerequisites.js';
@@ -45,7 +45,7 @@ function buildingBlueprints(){
   for(const [tool,item] of Object.entries(LARGE_UTILITIES))result.push({id:`building:${tool}`,kind:'building',name:item.name,category:'municipal',description:item.description,cost:item.cost,footprint:item.footprint,maxLevel:6,preview:{kind:'building',type:item.type,footprint:item.footprint}});
   for(const [businessKind,item] of Object.entries(BUSINESS_KINDS))result.push({id:`business:${businessKind}`,kind:'building',name:item.name,category:item.zone,description:item.description,cost:item.cost??ZONE_ECONOMY[item.zone].cost,footprint:newBuildingFootprint(businessKind),maxLevel:6,preview:{kind:'building',type:item.zone,businessKind}});
   for(const [type,item] of Object.entries(COMMUNITY_BUILDINGS))result.push({id:`community:${type}`,kind:'building',name:item.name,category:categoryForCommunity(type,item),description:item.description,cost:item.cost,footprint:newBuildingFootprint(type),maxLevel:item.fixedFacility?1:6,preview:{kind:'building',type},minPopulation:item.minPopulation||0});
-  for(const [type,item] of Object.entries(DECORATIONS))result.push({id:`decoration:${type}`,kind:'building',name:item.name,category:'landscape',description:item.description,cost:item.cost,footprint:1,maxLevel:1,preview:{kind:'building',type}});
+  for(const [type,item] of Object.entries(DECORATIONS))result.push({id:`decoration:${type}`,kind:'building',name:item.name,category:'landscape',description:item.description,cost:item.cost,footprint:newBuildingFootprint(type),maxLevel:1,preview:{kind:'building',type}});
   for(const [type,item] of Object.entries(LANDMARKS))result.push({id:`landmark:${type}`,kind:'building',name:item.name,category:'landmark',description:item.description,cost:item.cost,footprint:newBuildingFootprint(type),maxLevel:MAX_LANDMARK_LEVEL,preview:{kind:'building',type},landmark:item});
   return result;
 }
@@ -137,7 +137,7 @@ function buildingPreview(preview,requestedLevel=1,maxLevel=6){
     for(let waterY=y-2;waterY<=y+size+2;waterY++)for(let waterX=x+size;waterX<=x+size+5;waterX++)if(waterY>=0&&waterY<SIZE&&waterX<SIZE)at(state,waterX,waterY).terrain='water';
   }
   if(LANDMARKS[building.type]){const height=landmarkHeight(building);return {state,focus:{x:x+(size-1)/2,y:y+(size-1)/2,elevation:height*.45},viewSize:Math.max(size*2.6+(level-1)*.3,height*1.35),level,maxLevel};}
-  if(DECORATIONS[building.type]?.style==='europeanClassical'){const height=DECORATIONS[building.type].height;return {state,focus:{x,y,elevation:height*.44},viewSize:Math.max(2,height*1.65),level,maxLevel};}
+  if(isClassicalSculpture(building.type)){const height=DECORATIONS[building.type].height;return {state,focus:{x:x+(size-1)/2,y:y+(size-1)/2,elevation:height*.44},viewSize:Math.max(size*2,height*(DECORATIONS[building.type].style==='famousClassical'?1.45:1.65)),cameraHeight:DECORATIONS[building.type].style==='famousClassical'?28:48,level,maxLevel};}
   if(isEuropeanStreet(building)){const height=europeanHomeHeight(building);return {state,focus:{x:x+(size-1)/2,y:y+(size-1)/2,elevation:height*.43},viewSize:Math.max(size*2.15,height*1.85)+(level-1)*.01,level,maxLevel};}
   if(isJapaneseHome(building)){const height=japaneseHomeHeight(building);return {state,focus:{x:x+(size-1)/2,y:y+(size-1)/2,elevation:height*.40},viewSize:Math.max(size*1.85,height*1.9)+(level-1)*.025,level,maxLevel};}
   if(building.businessKind==='teaHouse'||building.type==='buddhistTemple'){const height=building.businessKind==='teaHouse'?teaHouseHeight(building):buddhistTempleHeight(building);return {state,focus:{x:x+(size-1)/2,y:y+(size-1)/2,elevation:height*.42},viewSize:Math.max(size*1.9,height*2.5)+(level-1)*.025,level,maxLevel};}

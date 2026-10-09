@@ -1,10 +1,11 @@
 import * as THREE from 'three';
+import {stoneBridgeLayout,stoneBridgeAt,roadSurfaceHeight} from './stone-bridges.js';
 import {roadElevation,interchangeBounds} from './interchanges.js';
 import {gridIndex,inGrid} from './grid.js';
 import {matchesBuildingFilter} from './building-filter.js';
 import {footprintSize} from './building-footprint.js';
 import {LANDMARKS,completedLandmarkLevel,landmarkScale} from './landmarks.js';
-import {DECORATIONS} from './decorations.js';
+import {isClassicalSculpture} from './decorations.js';
 
 export const LIGHTING_MODES=['day','night','auto'];
 export const LANDMARK_LIGHT_COLORS={gold:0xffd58b,cyan:0x72e8f1,pink:0xf4a7df,white:0xeaf7ff};
@@ -35,6 +36,8 @@ export class NightLighting {
   this.windowMaterial=new THREE.MeshBasicMaterial({color:0xffd999,transparent:true,opacity:0,depthWrite:false,toneMapped:false});
   this.landmarkMaterial=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,depthWrite:false,toneMapped:false});
   this.landmarkWashMaterial=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,depthWrite:false,toneMapped:false});
+  this.sculptureWashMaterial=this.landmarkWashMaterial.clone();this.sculptureWashMaterial.vertexColors=true;
+  this.sculptureWashMaterial.polygonOffset=true;this.sculptureWashMaterial.polygonOffsetFactor=-1;this.sculptureWashMaterial.polygonOffsetUnits=-1;
   this.fountainMaterial=new THREE.MeshBasicMaterial({color:0xb2f3ed,transparent:true,opacity:0,depthWrite:false,toneMapped:false});
   this.basinMaterial=new THREE.ShaderMaterial({
    uniforms:{amount:{value:0},time:{value:0}},transparent:true,depthWrite:false,toneMapped:false,
@@ -78,7 +81,7 @@ export class NightLighting {
   if(!roadFocus)for(const mesh of cityGroup.children){
    this.addParts(mesh.userData.partKind,mesh.userData.nightLanternParts||[],this.windowMaterial);
    this.addParts(mesh.userData.partKind,mesh.userData.nightLandmarkParts||[],this.landmarkMaterial,this.geometries[mesh.userData.partKind],true);
-   this.addParts(mesh.userData.partKind,mesh.userData.nightLandmarkWashParts||[],this.landmarkWashMaterial,this.geometries[mesh.userData.partKind],true);
+   this.addParts(mesh.userData.partKind,mesh.userData.nightLandmarkWashParts||[],mesh.userData.partKind?.startsWith('sculpture')?this.sculptureWashMaterial:this.landmarkWashMaterial,this.geometries[mesh.userData.partKind],true);
   }
   const windowHalos=panes.filter(p=>p[0]===0x8ba096).map(p=>{
    const angle=p[8]||0;
@@ -102,8 +105,11 @@ export class NightLighting {
     }
    }
   }
+  stoneBridgeLayout(state,true);
   for(const t of state.tiles)if(t.road){
    const x=t.x-31.5,z=t.y-31.5,y=t.bridge?.25:.10;
+   const stone=stoneBridgeAt(state,t.x,t.y);
+   if(stone){pools.push([x,roadSurfaceHeight(state,t.x,t.y,stone.axis)+.028,z,.5,.5]);continue;}
    if(t.interchange){
     const axis=t.interchange.axis,ew=axis==='ew';
     if(t.interchange.core)pools.push([x,.10,z,1.7,1.7]);
@@ -130,7 +136,7 @@ export class NightLighting {
     for(const side of [-1,1])landmarkPools.push([color,x+side*n*.34,y,z,n*1.1,n*1.1,1,-Math.PI/2,0,0]);
    }
    // Garden/entrance illumination also covers buildings without glass windows.
-   if(DECORATIONS[b.type]?.style==='europeanClassical'&&b.active===false)continue;
+   if(isClassicalSculpture(b.type)&&b.active===false)continue;
    for(const side of [-1,1]){const a=x+side*(n/2-.10),d=z+n/2-.10;pools.push([a,.12,d,.9,.9]);lamps.push([0xffefba,a,.17,d,.06,.07,.06,0,0,0]);}
   }
   this.addBoxes(panes.concat(lamps),this.windowMaterial);this.addBoxes(poles,this.baseMaterial);
@@ -149,8 +155,10 @@ export class NightLighting {
  addParts(kind,parts,material,geometry=this.geometries[kind],preserveColors=false){
   if(!parts.length)return;
   const mesh=new THREE.InstancedMesh(geometry,material,parts.length);
-  parts.forEach((p,i)=>{this.dummy.position.set(p[1],p[2],p[3]);this.dummy.rotation.set(p[7]||0,p[8]||0,p[9]||0);this.dummy.scale.set(p[4]*1.025,p[5]*1.025,p[6]*1.025);this.dummy.updateMatrix();mesh.setMatrixAt(i,this.dummy.matrix);if(preserveColors)mesh.setColorAt(i,new THREE.Color(p[0]));});mesh.frustumCulled=false;this.group.add(mesh);this.meshes.push(mesh);
+  // Irregular sculpture surfaces must align exactly; inflating them opens dark patches.
+  const shellScale=material===this.sculptureWashMaterial?1:1.025;
+  parts.forEach((p,i)=>{this.dummy.position.set(p[1],p[2],p[3]);this.dummy.rotation.set(p[7]||0,p[8]||0,p[9]||0);this.dummy.scale.set(p[4]*shellScale,p[5]*shellScale,p[6]*shellScale);this.dummy.updateMatrix();mesh.setMatrixAt(i,this.dummy.matrix);if(preserveColors)mesh.setColorAt(i,new THREE.Color(p[0]));});mesh.frustumCulled=false;this.group.add(mesh);this.meshes.push(mesh);
  }
- setAmount(amount,time=0){this.group.visible=amount>.01;this.windowMaterial.opacity=amount*.94;this.landmarkMaterial.opacity=amount*.9;this.landmarkWashMaterial.opacity=amount*.34;this.landmarkPoolMaterial.opacity=amount*.72;this.poolMaterial.opacity=amount*.85;this.fountainMaterial.opacity=amount*.66;this.basinMaterial.uniforms.amount.value=amount;this.basinMaterial.uniforms.time.value=time;this.fountainGlowMaterial.uniforms.amount.value=amount;}
- dispose(){this.clear();this.group.removeFromParent();this.windowMaterial.dispose();this.landmarkMaterial.dispose();this.landmarkWashMaterial.dispose();this.landmarkPoolMaterial.dispose();this.fountainMaterial.dispose();this.basinMaterial.dispose();this.fountainGlowMaterial.dispose();this.poolMaterial.dispose();this.texture.dispose();this.plane.dispose();}
+ setAmount(amount,time=0){this.group.visible=amount>.01;this.windowMaterial.opacity=amount*.94;this.landmarkMaterial.opacity=amount*.9;this.landmarkWashMaterial.opacity=amount*.34;this.sculptureWashMaterial.opacity=amount*.34;this.landmarkPoolMaterial.opacity=amount*.72;this.poolMaterial.opacity=amount*.85;this.fountainMaterial.opacity=amount*.66;this.basinMaterial.uniforms.amount.value=amount;this.basinMaterial.uniforms.time.value=time;this.fountainGlowMaterial.uniforms.amount.value=amount;}
+ dispose(){this.clear();this.group.removeFromParent();this.windowMaterial.dispose();this.landmarkMaterial.dispose();this.landmarkWashMaterial.dispose();this.sculptureWashMaterial.dispose();this.landmarkPoolMaterial.dispose();this.fountainMaterial.dispose();this.basinMaterial.dispose();this.fountainGlowMaterial.dispose();this.poolMaterial.dispose();this.texture.dispose();this.plane.dispose();}
 }

@@ -1,3 +1,5 @@
+import {stoneBridgeLayout,stoneBridgeAt,stoneDeckHeight,roadSurfaceHeight} from './stone-bridges.js';
+import {drawStoneBridge,animateStoneBridgeLights} from './stone-bridge-rendering.js';
 import {pedestrianCrossings} from './pedestrian-routing.js';
 import {planPedestrians,PEDESTRIAN_CAPACITY} from './pedestrian-plans.js';
 import {vehicleLanePose} from './vehicle-routing.js';
@@ -15,6 +17,7 @@ import {createYachtModel,updateYachtActor} from './yacht-rendering.js';
 import {RoadVehicleLighting} from './vehicle-lighting.js';
 import {SERVICE_LAYERS,MAP_LAYER_BUILDING_COLORS,serviceLayerCell,mapLayerBuildings} from './map-layers.js';
 import { DECORATIONS } from './decorations.js';
+import {drawFamousSculpture,createFamousSculptureGeometries,FAMOUS_SCULPTURE_MESH_KINDS} from './famous-sculptures.js';
 import {drawEuropeanSculpture,isSculptureWash,sculptureWashColor} from './european-sculptures.js';
 import { businessKind } from './business-kinds.js';
 import {drawSpecialtyHome, specialtyHeight} from './residential-architecture.js';
@@ -24,11 +27,12 @@ import { buildingStyle, residentialRoof } from './building-styles.js';
 import { footprintSize, buildingCells } from './building-footprint.js';
 import {ResidentRouteOverlay} from './resident-route-rendering.js';
 import {OnboardingOverlay} from './onboarding-rendering.js';
+import {CoopPresenceOverlay} from './coop-presence-rendering.js';
 import { COMMUNITY_BUILDINGS } from './community-buildings.js';
 import { LANDMARKS,landmarkHeight,landmarkScale,completedLandmarkLevel } from './landmarks.js';
 import * as THREE from 'three';
 import { TrafficController, detectIntersections } from './traffic-signals.js';
-import { wideRoadLayout, civicGardenGroups, boulevardLanes, privateBuildingGroups, rowBuildingHeight } from './city-layout.js';
+import { wideRoadLayout, civicGardenGroups, boulevardLanes, laneMovements, privateBuildingGroups, rowBuildingHeight } from './city-layout.js';
 import { ROAD_TIERS, upgradeOffer } from './progression.js';
 import {fireEffectLayout} from './fire-rendering.js';
 import {roadElevation,interchangeBounds,interchangeAt,INTERCHANGE_HEIGHT,validRoadPath,groundRoadAccess} from './interchanges.js';
@@ -111,7 +115,7 @@ class InstanceBuilder {
     const dummy = new THREE.Object3D();
     const col = new THREE.Color();
     for (const [kind, parts] of this.parts) {
-      const mesh = new THREE.InstancedMesh(this.view.geometries[kind], this.view.material, parts.length);
+      const mesh = new THREE.InstancedMesh(this.view.geometries[kind], FAMOUS_SCULPTURE_MESH_KINDS.has(kind)?this.view.sculptureMaterial:this.view.material, parts.length);
       parts.forEach((p, i) => {
         dummy.position.set(p[1], p[2], p[3]);
         dummy.scale.set(p[4], p[5], p[6]);
@@ -175,6 +179,7 @@ export class CityRenderer {
     this.directionGuide=new InterchangeDirectionGuide(container);
 
     this.material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .88, metalness: 0, flatShading: true });
+    this.sculptureMaterial = new THREE.MeshStandardMaterial({color:0xffffff,roughness:.72,metalness:0,vertexColors:true});
     this.geometries = {
       box: new THREE.BoxGeometry(1, 1, 1),
       flat: new THREE.BoxGeometry(1, 1, 1),
@@ -183,6 +188,7 @@ export class CityRenderer {
       mansard: new THREE.CylinderGeometry(.33,.5,1,4).rotateY(Math.PI/4).scale(Math.SQRT2,1,Math.SQRT2),
       flame: flameGeometry(),
       crown: new THREE.IcosahedronGeometry(.5, 1),
+      ...createFamousSculptureGeometries(),
       rock: new THREE.DodecahedronGeometry(.5, 0),
       roof: roofGeometry(),
       dome: new THREE.SphereGeometry(.5, 12, 6, 0, TAU, 0, Math.PI / 2),
@@ -229,6 +235,7 @@ export class CityRenderer {
       group.remove(child);
       if (child.isInstancedMesh) child.dispose();
       if (child.userData.ownGeometry) child.geometry.dispose();
+      if (child.userData.ownTexture) child.material.map?.dispose();
       if (child.userData.ownMaterial) child.material.dispose();
     }
   }
@@ -248,7 +255,7 @@ export class CityRenderer {
     this.camera.right = v * this.aspect / 2;
     this.camera.top = v / 2;
     this.camera.bottom = -v / 2;
-    this.camera.position.set(this.target.x + Math.sin(this.azimuth) * 48, 48, this.target.z + Math.cos(this.azimuth) * 48);
+    this.camera.position.set(this.target.x + Math.sin(this.azimuth) * 48, this.catalogMode?(this.catalogCameraHeight??48):48, this.target.z + Math.cos(this.azimuth) * 48);
     this.camera.lookAt(this.target);
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld();
@@ -286,7 +293,7 @@ export class CityRenderer {
       this._buildTerrain();
     }
     const buildingKey = (state.buildings || []).map(b => `${b.id}:${b.rotation??'auto'}:${b.type}:${footprintSize(b)}:${b.businessKind||''}:${b.variant}:${b.x}:${b.y}:${b.level}:${Math.min(4, Math.floor((b.progress ?? 1) * 4))}:${b.active !== false ? 1 : 0}`).join('|');
-    const tileKey = state.tiles.map(t => `${t.road || 0}${t.zone ? t.zone[0] : '.'}${t.buildingId ?? ''}:${t.vegetation??''}`).join(',');
+    const tileKey = state.tiles.map(t => `${t.road || 0}${t.bridge?'b':''}${t.zone ? t.zone[0] : '.'}${t.buildingId ?? ''}:${t.vegetation??''}`).join(',');
     const interchangeKey=(state.interchanges||[]).map(i=>`${i.x},${i.y}:${i.axis}:${i.width??3},${i.height??3}`).join('|');
     const incidentKey=(state.cityIncidents?.active||[]).map(event=>`${event.id}:${event.kind}:${event.targetId}`).join('|');
     const cityKey = `${terrainKey}|${tileKey}|${buildingKey}|${interchangeKey}|${state.festivalGames?.decoration||''}|${incidentKey}`;
@@ -468,6 +475,7 @@ export class CityRenderer {
     this._clear(this.cityGroup);
     this._clearFireIncidentEffects();
     this.wideRoads = wideRoadLayout(this.state.tiles);
+    this.stoneBridges=stoneBridgeLayout(this.state,true);
     this.junctionCells = new Set(detectIntersections(this.state.tiles).map(t => `${t.x},${t.y}`));
     const visibleBuildings=(this.state.buildings||[]).filter(b=>matchesBuildingFilter(b,this.buildingFilter));
     const gardens = civicGardenGroups(this.state.buildings || []);
@@ -526,7 +534,10 @@ export class CityRenderer {
         batch.box(0xece7d2,wx(crossing.start.x+(vertical?0:step)),.082,wx(crossing.start.y+(vertical?step:0)),vertical?.11:.06,.009,vertical?.06:.11);
       }
     }
+    if(!this.state.catalogRoadsHidden)for(const bridge of this.stoneBridges.bridges)drawStoneBridge(bridge,batch,this.cityGroup);
     batch.finish(this.cityGroup);
+    this.stoneBridgeLights=this.cityGroup.children.filter(m=>m.userData.stoneBridgeNight);
+    this.stoneBridgePicks=this.cityGroup.children.filter(m=>m.userData.stoneVault);
     this._buildFireIncidentEffects(visibleBuildings);
     this.nightLighting?.rebuild(this.cityGroup,this.state,this.buildingFilter,this.roadFocus);
     this.nightLighting?.setAmount(this.nightBlend||0);
@@ -571,6 +582,7 @@ export class CityRenderer {
   }
 
   _road(batch, tile, x, z) {
+    if(this.stoneBridges?.cells.has(`${tile.x},${tile.y}`))return;
     if(tile.interchange){this._interchangeRoad(batch,tile,x,z);return;}
     const neighbor = (dx, dy) => !!this._tile(tile.x + dx, tile.y + dy)?.road;
     const n = neighbor(0, -1), s = neighbor(0, 1), e = neighbor(1, 0), w = neighbor(-1, 0);
@@ -697,10 +709,13 @@ export class CityRenderer {
     batch.add('flat', style.sidewalk, x, .036, z, 1.001, .058, 1.001);
     batch.add('flat', style.asphalt, x + (right - left) / 2, .069, z + (bottom - top) / 2, left + right, .014, top + bottom);
     if (junction) return;
-    // Paired roads share a carriageway: four lanes, or six from level five.
+    // Paint a shared carriageway once, clipping each tile's marks to its cell.
     const lanes = boulevardLanes(tile, wide);
-    for(const divider of lanes?.dividers || [0]) batch.add('flat', wide.level>=6?0xffffff:0xf1eee0, x + (ew ? 0 : divider), .080, z + (ew ? divider : 0), ew ? .34 : .022, .008, ew ? .022 : .34);
     const middle = (wide.min + wide.max) / 2;
+    const laneSets = lanes ? (cross === middle ? [boulevardLanes(tile, wide, -1), boulevardLanes(tile, wide, 1)] : [lanes]) : [];
+    const inCell = offset => offset >= -.5 && offset < .5;
+    const dividers = lanes ? laneSets.flatMap(lane => lane.dividers.filter(inCell)) : [0];
+    for(const divider of dividers) batch.add('flat', wide.level>=6?0xffffff:0xf1eee0, x + (ew ? 0 : divider), .080, z + (ew ? divider : 0), ew ? .34 : .022, .008, ew ? .022 : .34);
     if (cross === Math.floor(middle)) {
       const offset = middle - cross;
       if (lanes?.median) {
@@ -715,9 +730,13 @@ export class CityRenderer {
     if (lanes) {
       const side = cross === wide.min ? -1 : 1;
       // Outer solid white edges make the full-width carriageway legible.
-      batch.add('flat', 0xf1eee0, x + (ew ? 0 : side * .327), .080, z + (ew ? side * .327 : 0), ew ? 1.001 : .018, .008, ew ? .018 : 1.001);
-      if ((ew ? tile.x : tile.y) % 4 === 0) {
-        for (const center of lanes.centers) this._laneArrow(batch, x, z, ew, center, lanes.direction);
+      if(cross===wide.min||cross===wide.max)batch.add('flat', 0xf1eee0, x + (ew ? 0 : side * .327), .080, z + (ew ? side * .327 : 0), ew ? 1.001 : .018, .008, ew ? .018 : 1.001);
+      for(const lane of laneSets){
+        const approach = this.junctionCells.has(`${tile.x + (ew ? lane.direction : 0)},${tile.y + (ew ? 0 : lane.direction)}`);
+        if (approach || (ew ? tile.x : tile.y) % 4 === 0) {
+          lane.centers.forEach((center, index) => {if(inCell(center))this._laneArrow(batch, x, z, ew, center, lane.direction,
+            approach ? laneMovements(lane.lanesPerDirection, index) : ['straight']);});
+        }
       }
     }
     if (wide.bridge) {
@@ -764,15 +783,23 @@ export class CityRenderer {
     if (level === 4) batch.add('flat', 0xbcc7be, px, .071, pz, ew ? 1.001 : .021, .008, ew ? .021 : 1.001);
   }
 
-  _laneArrow(batch, x, z, ew, cross, direction) {
-    const point = (along, across) => ew ? [x + along * direction, z + cross + across] : [x + cross + across, z + along * direction];
+  _laneArrow(batch, x, z, ew, cross, direction, movements = ['straight']) {
+    // Across is the driver's right in every map orientation.
+    const point = (along, across) => ew ? [x + along * direction, z + cross + across * direction] : [x + cross - across * direction, z + along * direction];
     const stroke = (a, b) => {
       const p = point(...a), q = point(...b);
       batch.add('flat', 0xf3f0df, (p[0] + q[0]) / 2, .083, (p[1] + q[1]) / 2, .024, .008, Math.hypot(q[0] - p[0], q[1] - p[1]), Math.atan2(q[0] - p[0], q[1] - p[1]));
     };
-    stroke([-.16, 0], [.16, 0]);
-    stroke([.16, 0], [.04, -.08]);
-    stroke([.16, 0], [.04, .08]);
+    stroke([-.19, 0], [movements.includes('straight') ? .19 : -.04, 0]);
+    if (movements.includes('straight')) {
+      stroke([.19, 0], [.095, -.055]);
+      stroke([.19, 0], [.095, .055]);
+    }
+    for (const [turn, side] of [['left', -1], ['right', 1]]) if (movements.includes(turn)) {
+      stroke([-.04, 0], [-.04, side * .11]);
+      stroke([-.04, side * .11], [-.10, side * .055]);
+      stroke([-.04, side * .11], [.02, side * .055]);
+    }
   }
 
   _largeGarden(batch, group) {
@@ -876,10 +903,11 @@ export class CityRenderer {
   }
 
   _decoration(batch,b){
-    const x=wx(b.x),z=wx(b.y),type=b.type;
+    const offset=(footprintSize(b)-1)/2,x=wx(b.x)+offset,z=wx(b.y)+offset,type=b.type;
     const box=(c,a,y,d,w,h,l)=>batch.box(c,x+a,y,z+d,w,h,l);
     const shape=(k,c,a,y,d,w,h,l,ry=0,rx=0,rz=0)=>batch.add(k,c,x+a,y,z+d,w,h,l,ry,rx,rz);
     if(DECORATIONS[type]?.style==='europeanClassical'){drawEuropeanSculpture(b,shape);return;}
+    if(DECORATIONS[type]?.style==='famousClassical'){drawFamousSculpture(b,shape);return;}
     box(0xd5ceb6,0,.035,0,.86,.055,.86);
     if(type==='citySculpture'){
       box(0xb8b7a4,0,.13,0,.47,.19,.47);
@@ -1434,7 +1462,7 @@ export class CityRenderer {
   }
   _animateYachts(delta){
     this.yachtClock=(this.yachtClock||0)+delta;
-    for(let i=0;i<(this.yachts||[]).length;i++)updateYachtActor(this.yachts[i],this.yachtEntries[i],this.yachtClock,!!this.roadFocus,this.nightBlend);
+    for(let i=0;i<(this.yachts||[]).length;i++)updateYachtActor(this.yachts[i],this.yachtEntries[i],this.yachtClock,!!this.roadFocus,this.nightBlend,this.state);
   }
 
   _largeUtility(batch,b){
@@ -2316,6 +2344,12 @@ export class CityRenderer {
     this.moveGhostId=null;
     if(this.coverageGroup)this.coverageGroup.visible=!this.roadFocus;
   }
+  setCoopPresence(people,label){
+    if(!this.coopPresence&&!people.length)return;
+    this.coopPresence??=new CoopPresenceOverlay(this.scene,{label});
+    this.coopPresence.set(people,this.state);
+  }
+
   previewMovingBuilding(id,cell,valid){
     const b=this.state.buildings.find(b=>b.id===id);
     if(!b||!cell){this.clearMoveGhost();return;}
@@ -2401,7 +2435,7 @@ export class CityRenderer {
     if(!cell)this.directionGuide?.set(null,this.state);
     this._buildSelectedCoverage();
     this.selectionRing.visible = !!cell;
-    if (cell) this.selectionRing.position.set(wx(cell.x), this._tile(cell.x, cell.y)?.terrain === 'water' ? .14 : 0, wx(cell.y));
+    if (cell) this.selectionRing.position.set(wx(cell.x), stoneBridgeAt(this.state,cell.x,cell.y)?roadSurfaceHeight(this.state,cell.x,cell.y)+.015:this._tile(cell.x, cell.y)?.terrain === 'water' ? .14 : 0, wx(cell.y));
   }
 
   setDirectionGuide(item){
@@ -2509,7 +2543,7 @@ export class CityRenderer {
       }
       dummy.position.set(wx(tile.x), tile.terrain === 'water' ? .213 : .092, wx(tile.y));
       dummy.scale.set(.965, .006 * opacityScale, .965);
-      if (opacityScale < .1) dummy.scale.set(0, 0, 0);
+      if (opacityScale < .1 || this.overlay==='traffic'&&stoneBridgeAt(this.state,tile.x,tile.y)) dummy.scale.set(0, 0, 0);
       dummy.updateMatrix(); mesh.setMatrixAt(i, dummy.matrix); mesh.setColorAt(i, color);
     });
     mesh.instanceMatrix.needsUpdate = true;
@@ -2526,6 +2560,15 @@ export class CityRenderer {
           const from=-.5+i/slices,to=from+1/slices,offset=(from+to)/2;
           const h0=roadElevation(this.state,t.x+(ew?from:0),t.y+(ew?0:from),t.interchange.axis),h1=roadElevation(this.state,t.x+(ew?to:0),t.y+(ew?0:to),t.interchange.axis);
           pieces.push({tile:t,ew,offset,height:(h0+h1)/2,slope:Math.atan2(h1-h0,to-from),length:Math.hypot(to-from,h1-h0)});
+        }
+      }
+      for(const t of tiles){
+        const bridge=stoneBridgeAt(this.state,t.x,t.y);if(!bridge)continue;
+        const ew=bridge.axis==='ew';
+        for(let i=0;i<12;i++){
+          const from=-.5+i/12,to=from+1/12,offset=(from+to)/2,along=ew?t.x:t.y;
+          const h0=stoneDeckHeight(bridge,along+from),h1=stoneDeckHeight(bridge,along+to);
+          pieces.push({tile:t,ew,offset,height:(h0+h1)/2-.079,slope:Math.atan2(h1-h0,to-from),length:Math.hypot(to-from,h1-h0)});
         }
       }
       if(pieces.length){
@@ -2747,11 +2790,10 @@ export class CityRenderer {
     const dx = b.x - a.x, dy = b.y - a.y || (dx === 0 ? 1 : 0);
     const lane=length?vehicleLanePose(path,distance,this.wideRoads):{x:a.x-dy*.16,y:a.y+dx*.16,angle:Math.atan2(dx,dy)};
     const x = wx(lane.x), z = wx(lane.y);
-    const bridgeA = this._tile(a.x, a.y)?.terrain === 'water', bridgeB = this._tile(b.x, b.y)?.terrain === 'water';
-    const elevation = .079 + ((bridgeA ? 1 - fraction : 0) + (bridgeB ? fraction : 0)) * .114+roadElevation(this.state,a.x+(b.x-a.x)*fraction,a.y+(b.y-a.y)*fraction,dx?'ew':'ns');
+    const elevation=roadSurfaceHeight(this.state,lane.x,lane.y,dx?'ew':'ns');
     this.fireTruck.position.set(x, elevation, z);
     const px=a.x+(b.x-a.x)*fraction,py=a.y+(b.y-a.y)*fraction;
-    const rise=roadElevation(this.state,px+dx*.05,py+dy*.05,dx?'ew':'ns')-roadElevation(this.state,px-dx*.05,py-dy*.05,dx?'ew':'ns');
+    const rise=roadSurfaceHeight(this.state,px+dx*.05,py+dy*.05,dx?'ew':'ns')-roadSurfaceHeight(this.state,px-dx*.05,py-dy*.05,dx?'ew':'ns');
     this.fireTruck.rotation.set(-Math.atan2(rise,.1),lane.angle,0,'YXZ');
     if (!this.paused && this.civicFollow?.id === this.civicIncident.id) {
       // Keep the already framed screen position while following the actual
@@ -2899,10 +2941,9 @@ export class CityRenderer {
       const dx = pose.dx, dz = pose.dy;
       const lane=pose.lanePose||vehicleLanePose(car.reverse?[...car.points].reverse():car.points,car.travel,this.wideRoads);
       const x = wx(lane.x), z = wx(lane.y);
-      const bridgeA = this._tile(a.x, a.y)?.terrain === 'water', bridgeB = this._tile(b.x, b.y)?.terrain === 'water';
-      const y = .16 + ((bridgeA ? 1 - f : 0) + (bridgeB ? f : 0)) * .114+roadElevation(this.state,pose.x,pose.y,dx?'ew':'ns');
+      const y=.081+roadSurfaceHeight(this.state,lane.x,lane.y,dx?'ew':'ns');
       const angle = lane.angle;
-      const rise=roadElevation(this.state,pose.x+dx*.05,pose.y+dz*.05,dx?'ew':'ns')-roadElevation(this.state,pose.x-dx*.05,pose.y-dz*.05,dx?'ew':'ns');
+      const rise=roadSurfaceHeight(this.state,lane.x+dx*.05,lane.y+dz*.05,dx?'ew':'ns')-roadSurfaceHeight(this.state,lane.x-dx*.05,lane.y-dz*.05,dx?'ew':'ns');
       const pitch=-Math.atan2(rise,.1),cosPitch=Math.cos(pitch),sinPitch=Math.sin(pitch);
       const vehicleStyle=ROAD_VEHICLE_STYLES[car.appearance]||ROAD_VEHICLE_STYLES[car.kind]||ROAD_VEHICLE_STYLES.car;
       const {length,width,bodyHeight,cabinHeight,cabinLength,shape}=vehicleStyle;
@@ -3170,8 +3211,8 @@ export class CityRenderer {
       const pa=a.cell||person.points[Math.min(segment,person.points.length-1)],pb=b.cell||person.points[Math.min(segment+1,person.points.length-1)];
       const axis=a.axis||b.axis||(pa.x!==pb.x?'ew':'ns');
       const ax=a.x+HALF-.5,ay=a.z+HALF-.5,bx=b.x+HALF-.5,by=b.z+HALF-.5;
-      const upperA=roadElevation(this.state,ax,ay,axis),upperB=roadElevation(this.state,bx,by,axis);
-      const floor=a.height+(b.height-a.height)*fraction-upperA*(1-fraction)-upperB*fraction+roadElevation(this.state,ax+(bx-ax)*fraction,ay+(by-ay)*fraction,axis);
+      const upperA=roadSurfaceHeight(this.state,ax,ay,axis),upperB=roadSurfaceHeight(this.state,bx,by,axis);
+      const floor=a.height+(b.height-a.height)*fraction-upperA*(1-fraction)-upperB*fraction+roadSurfaceHeight(this.state,ax+(bx-ax)*fraction,ay+(by-ay)*fraction,axis);
       const angle = Math.atan2((b.x - a.x) * (reverse ? -1 : 1), (b.z - a.z) * (reverse ? -1 : 1));
       const swing = Math.sin(person.travel * 20 + person.nameSeed % 5) * .33;
       const bob = Math.abs(Math.sin(person.travel * 20)) * .007;
@@ -3341,6 +3382,10 @@ export class CityRenderer {
       const hit = this.raycaster.intersectObject(this.buildingPickMesh, false)[0];
       if (hit) return { ...this.buildingPickCells[hit.instanceId] };
     }
+    if(this.stoneBridgePicks?.length){
+      const hit=this.raycaster.intersectObjects(this.stoneBridgePicks,false)[0];
+      if(hit){const x=Math.floor(hit.point.x+HALF),y=Math.floor(hit.point.z+HALF);if(inGrid(this.state,x,y))return {x,y};}
+    }
     const x = Math.floor(point.x + HALF), y = Math.floor(point.z + HALF);
     return inGrid(this.state,x,y)?{x,y}:null;
   }
@@ -3349,7 +3394,7 @@ export class CityRenderer {
     const same = cell?.x === this.hovered?.x && cell?.y === this.hovered?.y;
     this.hovered = cell;
     this.hoverRing.visible = !!cell && this.tool === 'inspect';
-    if (cell) this.hoverRing.position.set(wx(cell.x), this._tile(cell.x, cell.y)?.terrain === 'water' ? .14 : 0, wx(cell.y));
+    if (cell) this.hoverRing.position.set(wx(cell.x), stoneBridgeAt(this.state,cell.x,cell.y)?roadSurfaceHeight(this.state,cell.x,cell.y)+.015:this._tile(cell.x, cell.y)?.terrain === 'water' ? .14 : 0, wx(cell.y));
     if (!same) this.callbacks.onHover(cell);
   }
 
@@ -3634,6 +3679,7 @@ export class CityRenderer {
     this.sun.color.set(0xffedd0).lerp(new THREE.Color(0x92b9ec),n);
     this.sun.intensity=3.05*(1-n)+.38*n;
     this.nightLighting.setAmount(n,this.lightingClock);
+    animateStoneBridgeLights(this.stoneBridgeLights||[],n,this.elapsed);
     this.vehicleLighting?.setAmount(n,!!this.roadFocus);
     this.civicRoadLighting?.setAmount(n);
     if(this.waterMaterial?.uniforms.night)this.waterMaterial.uniforms.night.value=n;
@@ -3651,6 +3697,7 @@ export class CityRenderer {
     const delta = Math.min((now - this.lastFrame) / 1000, .06);
     this.lastFrame = now;
     this.elapsed += delta;
+    this.coopPresence?.expire();
     this._animateLighting(delta);
     if (this.waterMaterial) this.waterMaterial.uniforms.time.value = this.elapsed;
     const simulationDelta = this.paused ? 0 : delta * this.speed;
@@ -3689,6 +3736,7 @@ export class CityRenderer {
     this.clearStreetCelebration();
     for(const marker of this.upgradeMarkers?.values()||[])marker.button.remove();
     cancelAnimationFrame(this.animation);
+    this.coopPresence?.dispose();
     this.resizeObserver.disconnect();
     this.listeners.forEach(([target, event, handler, options]) => target.removeEventListener(event, handler, options));
     this._clear(this.coverageGroup); this._clear(this.terrainGroup); this._clear(this.cityGroup); this._clear(this.overlayGroup); this._clear(this.layerBuildingHighlightGroup); this._clear(this.bridgeHintGroup); this._clear(this.signalGroup);
@@ -3698,7 +3746,7 @@ export class CityRenderer {
     this.civicDrillLabel.remove();
     this.civicVehicleLabel.remove();
     for (const g of Object.values(this.geometries)) g.dispose();
-    this.material.dispose(); this.previewMaterial.dispose(); this.previewLineMaterial.dispose();
+    this.material.dispose(); this.sculptureMaterial.dispose(); this.previewMaterial.dispose(); this.previewLineMaterial.dispose();
     for (const material of Object.values(this.signalMaterials)) material.dispose();
     for (const ring of [this.hoverRing, this.selectionRing]) { ring.geometry.dispose(); ring.material.dispose(); }
     this.previewLines.geometry.dispose();
